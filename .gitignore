@@ -1,0 +1,21 @@
+# 秘密情報（S3 のアクセスキーなど）
+.env
+
+# 生成した MCAP などの出力（リポジトリには入れない）
+output/
+*.mcap
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS / エディタ
+.DS_Store
+.idea/
+.vscode/
+
+# ローカル専用（作業メモ・進捗、エディタ / エージェント用の指示）
+notes/
+CLAUDE.md

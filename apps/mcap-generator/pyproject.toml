@@ -1,0 +1,28 @@
+[project]
+name = "mcap-generator"
+version = "0.1.0"
+description = "合成 MCAP（カメラ / IMU / GNSS）と metadata.json を生成する。ホスト（クラスタの外の作業用マシン）で実行する。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# バージョンは固定する（実際に入る版は uv.lock で完全に固定される）
+dependencies = [
+    "foxglove-schemas-protobuf==0.4.0",
+    "mcap==1.6.0",
+    "mcap-protobuf-support==0.6.0",
+    "numpy==2.5.4",
+    "pillow==13.0.0",
+    "protobuf==7.36.2",
+]
+
+[project.scripts]
+# `uv run mcap-generate ...` で CLI を起動できるようにする
+mcap-generate = "mcap_generator.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+]

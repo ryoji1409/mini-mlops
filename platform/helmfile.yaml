@@ -1,0 +1,19 @@
+# プラットフォーム部品（基盤）を Helmfile でまとめて管理する。
+# 使い方は platform/README.md を参照。
+#
+# バージョンは必ず固定する（latest は使わない）。
+
+repositories:
+  - name: seaweedfs
+    url: https://seaweedfs.github.io/seaweedfs/helm
+
+releases:
+  # S3 互換ストレージ。フェーズ 1 で導入。
+  - name: seaweedfs
+    namespace: storage
+    createNamespace: true
+    chart: seaweedfs/seaweedfs
+    version: 4.52.0
+    values:
+      - values/seaweedfs.yaml
+

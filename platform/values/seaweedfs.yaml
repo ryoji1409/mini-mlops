@@ -1,0 +1,82 @@
+# SeaweedFS（chart 4.52.0）の values。
+#
+# 構成: allInOne モード（master / volume / filer / S3 ゲートウェイを 1 Pod にまとめる）
+#   - 小さな検証環境なので、コンポーネントを分けずにメモリを節約する。
+#   - master / volume / filer を別々に冗長化する分離構成は、ここでは扱わない。
+#
+# リソース予算: README の「方針」の「SeaweedFS 一式 1.5GB」以内。
+#   all-in-one Pod の limit 1Gi + バケット作成フック等は使わない（バケットは docs/setup/01-storage.md 手順 5 で作る）。
+
+global:
+  seaweedfs:
+    # 単一ノード・単一レプリカなので複製はしない（"000" = 複製なし）
+    enableReplication: false
+    replicationPlacement: "000"
+
+# allInOne を使うので、個別コンポーネントの Deployment / StatefulSet は作らない
+master:
+  enabled: false
+  # 1 つの volume（SeaweedFS 内部の格納単位）の上限サイズ。
+  # 既定の 1000MB だと、バケットごとに volume を複数個ずつ確保するため 5Gi の PVC ではすぐに枠が足りなくなる。
+  # 小さめにして、volume の数（maxVolumes）を多く取れるようにする（この検証のデータは合計でも数十 MB）。
+  volumeSizeLimitMB: 64
+  defaultReplication: "000"
+volume:
+  enabled: false
+  # allInOne では先頭の dataDirs の maxVolumes が `-volume.max` として使われる。
+  # 64MB × 64 = 4GiB（PVC 5Gi に対して余裕を残す）
+  dataDirs:
+    - name: data
+      type: "persistentVolumeClaim"
+      maxVolumes: 64
+filer:
+  enabled: false
+s3:
+  enabled: false
+
+allInOne:
+  enabled: true
+  replicas: 1
+  # バージョンを明示的に固定する（chart の appVersion と同じだが、latest 事故を防ぐため明記）
+  imageOverride: chrislusf/seaweedfs:4.52
+  updateStrategy:
+    type: Recreate
+
+  # S3 API を有効化し、認証あり（アクセスキーは Secret で渡す）
+  s3:
+    enabled: true
+    enableAuth: true
+    # platform/templates/seaweedfs-s3-config.json から作る Secret（docs/setup/01-storage.md 手順 2）。キー名 seaweedfs_s3_config に JSON が入る
+    existingConfigSecret: seaweedfs-s3-config
+
+  # データの保存先: Longhorn の PVC
+  # サイズは、各ノードの Longhorn ディスクに「置ける」大きさにする（Longhorn は配置時に、ディスクの 30% の予約と
+  # 25% の最低空き容量を守れるか確かめる。小さな VM のディスクでは 20Gi などは置けず、アタッチできない）。
+  # PVC は後から小さくできないので、変えるときは PVC の作り直しになる（docs/setup/01-storage.md のよくあるエラー）。
+  data:
+    type: persistentVolumeClaim
+    size: 5Gi
+    storageClass: longhorn
+
+  service:
+    # 当面はホストから port-forward で接続する（kubectl -n storage port-forward svc/seaweedfs-all-in-one 8333:8333）。
+    # NodePort で公開したい場合は、下の 2 行のコメントを外す（30833 は空いている番号に変えてよい）。
+    type: ClusterIP
+    # type: NodePort
+    # nodePorts: { s3: 30833 }
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # Go のランタイムに「このくらいでメモリを抑えて」と伝える。
+  # limit ぎりぎりまで使って OOMKill されるのを避けるため、limit より少し低くする。
+  extraEnvironmentVars:
+    GOMEMLIMIT: 900MiB
+
+  # 単一レプリカなので、Pod 同士を別ノードに分ける設定は不要
+  affinity: ""
