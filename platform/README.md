@@ -6,13 +6,32 @@
 
 | リリース | Namespace | チャート | 用途 | フェーズ |
 |---|---|---|---|---|
+| `longhorn` | `longhorn-system` | `longhorn/longhorn` 1.12.2 | 分散ブロックストレージ。default StorageClass `longhorn`（他の部品の PVC はすべてこれ） | 0 |
 | `seaweedfs` | `storage` | `seaweedfs/seaweedfs` 4.52.0 | S3 互換オブジェクトストレージ（S3 API: ポート 8333） | 1 |
 | `argo-workflows` | `argo` | `argo/argo-workflows` 2.0.18（v4.1.6） | ワークフローエンジン（WorkflowTemplate を実行） | 2 |
 | `kuberay-operator` | `ray-system` | `kuberay/kuberay-operator` 1.7.2 | RayJob / RayCluster の operator（Ray Data の変換ジョブを動かす） | 2 |
 
 | Kustomize | 中身 | フェーズ |
 |---|---|---|
+| `manifests/longhorn-check/` | Longhorn の動作確認用（Namespace `longhorn-check`、テスト用 PVC 1Gi と Pod） | 0 |
 | `manifests/pipelines/` | Namespace `mlops`、ServiceAccount `mcap-pipeline` と最小限の Role、S3 接続先の ConfigMap、既定リソースの LimitRange | 2 |
+
+### Longhorn の構成（`values/longhorn.yaml`）
+
+- **データエンジンは V1（iSCSI）だけ**。V2（SPDK）は hugepages 2GiB と専用 CPU コアが要るので使わない。
+- **StorageClass `longhorn` を default** にする。PVC のレプリカ（複製）は **2**（既定の 3 から減らした。1 ノードが落ちてもデータは残る）。
+  データは各ノードの `/var/lib/longhorn` に置かれる。
+- **常駐 Pod を減らす**: UI 1 つ、CSI のコントローラ（attacher / provisioner / resizer / snapshotter）を 3 つずつ → 1 つずつ。
+- **リソース**: チャートで指定できるのは longhorn-manager（requests 50m / 128Mi、limits 1 CPU / 512Mi）だけ。
+  UI・CSI・instance-manager など Longhorn が自分で作る Pod には resources を指定する手段が無いので、
+  **LimitRange `longhorn-default-resources`**（requests 10m / 32Mi、limits 1 CPU / 512Mi）で既定値を付ける。
+  limit を大きめにしているのは、instance-manager（ボリュームのデータの通り道）がメモリ不足で落ちると、そのノードのボリュームが全部止まるため。
+  実際の使用量は `kubectl -n longhorn-system top pod` で確認し、予算（全体で 2GB 程度）と比べる。
+- **アンインストールの安全装置**: `deletingConfirmationFlag: false` のままにしてある。`helmfile destroy` などで消そうとしても
+  Longhorn の削除ジョブが失敗して止まり、データは消えない（本当に消すときは必ず事前に確認する）。
+- **公開方法**: UI は ClusterIP のまま。認証が無いので `kubectl -n longhorn-system port-forward svc/longhorn-frontend 8090:80` でだけ開く。
+- **ノードの準備**: 各ノードに open-iscsi（iscsid が起動している）、nfs-common などが必要。
+  Longhorn 公式の `longhornctl` v1.12.2 で確認・インストールする（[00-longhorn.md](../docs/setup/00-longhorn.md) 手順 2）。
 
 ### SeaweedFS の構成（`values/seaweedfs.yaml`）
 
@@ -51,10 +70,12 @@
 
 | フェーズ | 手順書 | 入れるもの |
 |---|---|---|
+| 0 | [docs/setup/00-longhorn.md](../docs/setup/00-longhorn.md) | `longhorn` |
 | 1 | [docs/setup/01-storage.md](../docs/setup/01-storage.md) | S3 認証の Secret、`seaweedfs` |
 | 2 | [docs/setup/02-pipeline.md](../docs/setup/02-pipeline.md) | `manifests/pipelines`、Secret、`argo-workflows`・`kuberay-operator` |
 
-Helmfile は `-l name=<リリース名>` で 1 つずつ入れられます。`-l` なしの `helmfile -f platform/helmfile.yaml apply` は全リリースを入れます。
+Helmfile は `-l name=<リリース名>` で 1 つずつ入れられます。`-l` なしの `helmfile -f platform/helmfile.yaml apply` は全リリースを入れます
+（SeaweedFS は `needs` で Longhorn の後、Longhorn は `wait` で起動を待つ）。
 
 ```bash
 helmfile -f platform/helmfile.yaml diff     # 差分の確認（helm-diff プラグインが必要）
@@ -64,7 +85,9 @@ helmfile -f platform/helmfile.yaml apply
 ## 動作確認コマンド
 
 ```bash
-helmfile -f platform/helmfile.yaml list                     # 3 リリースと固定したチャートの版
+helmfile -f platform/helmfile.yaml list                     # 4 リリースと固定したチャートの版
+kubectl get storageclass                                    # longhorn (default) だけ
+kubectl -n longhorn-system get pod
 kubectl -n storage get pod,pvc
 kubectl -n argo get pod
 kubectl -n ray-system get pod
@@ -74,6 +97,7 @@ kubectl -n mlops get sa,role,rolebinding,configmap,secret,limitrange
 期待される出力（抜粋）:
 
 ```
+longhorn (default)   driver.longhorn.io   Delete   Immediate   true
 pod/seaweedfs-all-in-one-xxxxxxxxxx-xxxxx  1/1  Running
 persistentvolumeclaim/seaweedfs-all-in-one-data   Bound   5Gi    longhorn
 argo-workflows-server-xxxxxxxxxx-xxxxx                1/1  Running
@@ -88,6 +112,14 @@ serviceaccount/mcap-pipeline、role/mcap-pipeline、configmap/pipeline-s3、secr
 
 | 症状 | 原因と対処 |
 |---|---|
+| `longhornctl check preflight` で `Service iscsid is not running` / `Package open-iscsi is not installed` | ノードの準備が足りない。`longhornctl install preflight`（[00-longhorn.md](../docs/setup/00-longhorn.md) 手順 2） |
+| `longhornctl check preflight` で `multipathd.service is running` の警告 | [00-longhorn.md](../docs/setup/00-longhorn.md) 手順 3 を各ノードで行う |
+| `helmfile apply` が `longhorn` で長く止まる / タイムアウト | Pod の起動待ち（`wait: true`、最大 15 分）。`kubectl -n longhorn-system get pod` で `ImagePullBackOff`（イメージ取得の失敗）や `CrashLoopBackOff` を確認。manager のログは `kubectl -n longhorn-system logs ds/longhorn-manager -c longhorn-manager` |
+| longhorn-manager が `CrashLoopBackOff`、ログに `iscsiadm` / `iscsid` のエラー | open-iscsi が入っていない / iscsid が止まっている。`longhornctl check preflight` で確認 |
+| PVC は `Bound` だが Pod が `ContainerCreating`、`describe` に `MountVolume.MountDevice failed ... already mounted or mount point busy` | multipathd がデバイスを掴んでいる。[00-longhorn.md](../docs/setup/00-longhorn.md) 手順 3 を行い、Pod を作り直す |
+| ボリュームが `degraded` のまま | レプリカ 2 を置けるノード / ディスクの空きが足りない。`kubectl -n longhorn-system get nodes.longhorn.io` と UI の Node 画面でディスクの空きを確認（既定では空きが 25% を切ったノードには置かない） |
+| `helmfile destroy` / `helm uninstall longhorn` が失敗する | 安全装置（`deletingConfirmationFlag: false`）による正常な動き。Longhorn を本当に消すときは、データを消してよいか確認してから、Longhorn 公式のアンインストール手順に従う |
+| longhorn の Pod が `OOMKilled` | LimitRange の limit 512Mi を超えた。`kubectl -n longhorn-system top pod` で確認し、メモリ予算の範囲で `values/longhorn.yaml` の LimitRange か manager の limit を上げる |
 | Pod が `ContainerCreating` のまま、`describe` に `secret "seaweedfs-s3-config" not found` | Secret を作る前にインストールした。[01-storage.md](../docs/setup/01-storage.md) 手順 2 を実行すれば自動で起動が進む |
 | PVC が `Pending` | StorageClass `longhorn` が無い / Longhorn が不調。`kubectl get sc` を確認。別の StorageClass を使うなら values の `allInOne.data.storageClass` を変更 |
 | `aws s3 ...` で `InvalidAccessKeyId` / `SignatureDoesNotMatch` | `.env` のキーと Secret の中身が食い違っている。[01-storage.md](../docs/setup/01-storage.md) 手順 2 をやり直し、`kubectl -n storage rollout restart deploy/seaweedfs-all-in-one` で再起動 |

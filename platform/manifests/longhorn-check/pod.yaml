@@ -1,0 +1,27 @@
+# PVC を /data にマウントして待機するだけの Pod。読み書きは kubectl exec で行う（docs/setup/00-longhorn.md 手順 6）。
+# Pod を消して作り直しても /data の中身が残ること（= データが Longhorn のボリュームにあること）を確かめる。
+apiVersion: v1
+kind: Pod
+metadata:
+  name: check-pod
+  namespace: longhorn-check
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: shell
+      image: busybox:1.37.0
+      command: [sh, -c, "sleep 86400"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+      resources:
+        requests: { cpu: 10m, memory: 16Mi }
+        limits: { cpu: 100m, memory: 64Mi }
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: check-data

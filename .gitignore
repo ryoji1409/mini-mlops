@@ -16,6 +16,9 @@ __pycache__/
 .idea/
 .vscode/
 
+# ツール（docs/setup/00-longhorn.md でダウンロードする longhornctl など）
+.tools/
+
 # ローカル専用（作業メモ・進捗、エディタ / エージェント用の指示）
 notes/
 CLAUDE.md

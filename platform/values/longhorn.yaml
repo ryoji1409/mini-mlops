@@ -1,0 +1,72 @@
+# Longhorn（分散ブロックストレージ）の values。チャート longhorn/longhorn 1.12.2。
+# クラスタの default StorageClass `longhorn` を作り、SeaweedFS などの PVC を各ノードのディスクに複製して置く。
+#
+# 方針:
+# - データエンジンは V1（iSCSI）だけを使う。V2（SPDK）は hugepages 2GiB と専用 CPU コアが要るので使わない
+# - 小さなクラスタ向けに、レプリカ数と常駐 Pod の数を減らす
+# - チャートで resources を指定できない Pod（UI・CSI・instance-manager など）には、
+#   下の LimitRange で既定の requests / limits を付ける（README の「方針」）
+#
+# 設定一覧: helm show values longhorn/longhorn --version 1.12.2
+
+persistence:
+  # StorageClass `longhorn` を default にする（他の StorageClass を default にしない）
+  defaultClass: true
+  # PVC ごとのレプリカ（複製）の数。既定の 3 から 2 に減らす。
+  # 1 ノードが落ちてもデータは残り、ディスク使用量と instance-manager のメモリは 3 の 2/3 で済む。
+  # 既にある PVC のレプリカ数は変わらない（変えるなら Longhorn UI でボリュームごとに変更する）
+  defaultClassReplicaCount: 2
+  # PVC を消すとボリュームも消える（Kubernetes の標準的な動き）。PVC の削除は必ず事前に確認する
+  reclaimPolicy: Delete
+
+defaultSettings:
+  # Longhorn UI から作るボリュームのレプリカ数（StorageClass と揃える）
+  defaultReplicaCount: '{"v1":"2"}'
+  # 誤ってアンインストールしたときにデータを消さないための安全装置。
+  # false の間は `helm uninstall` / `helmfile destroy` の削除ジョブが失敗し、Longhorn は消えない。
+  # 本当に消すときだけ、データを消してよいか確認してから Longhorn UI か kubectl で true にする
+  deletingConfirmationFlag: false
+
+csi:
+  # CSI のコントローラ（attacher / provisioner / resizer / snapshotter）は既定で 3 つずつ動く。
+  # 検証環境なので 1 つずつにしてメモリを節約する（落ちても別のノードで立ち直るまで PVC の作成などが待たされるだけ）
+  attacherReplicaCount: 1
+  provisionerReplicaCount: 1
+  resizerReplicaCount: 1
+  snapshotterReplicaCount: 1
+
+longhornManager:
+  # 各ノードで動く本体（DaemonSet）。チャートで resources を指定できるのはこれだけ
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+longhornUI:
+  # UI は既定の 2 つから 1 つに減らす（port-forward で見るだけなので冗長化は不要）
+  replicas: 1
+
+# チャートと一緒に作る追加のオブジェクト。
+# LimitRange: この Namespace で resources を書いていないコンテナに、既定の requests / limits を付ける。
+#   対象: UI、driver-deployer、manager の init コンテナ、アップグレード用ジョブ、
+#         それと Longhorn 自身が作る Pod（CSI のコントローラ・csi-plugin・engine-image・instance-manager・share-manager）
+#   requests は小さく（ノードのメモリ予約を増やしすぎない）、limits は余裕を持たせる。
+#   特に instance-manager はボリュームのデータの通り道なので、メモリ不足で落ちるとそのノードのボリュームが全部止まる。
+#   そのため limit を 512Mi と大きめにしている（実際の使用量は kubectl top で確認する: platform/README.md）
+# Helm は LimitRange を Deployment / DaemonSet より先に作るので、最初の Pod から適用される。
+extraObjects:
+  - apiVersion: v1
+    kind: LimitRange
+    metadata:
+      name: longhorn-default-resources
+      namespace: longhorn-system
+      labels:
+        app.kubernetes.io/part-of: mini-mlops
+    spec:
+      limits:
+        - type: Container
+          defaultRequest:
+            cpu: 10m
+            memory: 32Mi
+          default:
+            cpu: "1"
+            memory: 512Mi

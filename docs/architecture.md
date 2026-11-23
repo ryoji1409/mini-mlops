@@ -1,5 +1,21 @@
 # 構成とデータの流れ
 
+## フェーズ 0: ストレージの土台（Longhorn）
+
+```
+┌──────────────────── Kubernetes ────────────────────┐
+│ ns longhorn-system:                                                                            │
+│   longhorn-manager（DaemonSet、全ノード） … ボリュームの管理、各ノードの /var/lib/longhorn を使う │
+│   instance-manager（ノードごと）        … ボリュームの engine / replica プロセス（データの通り道）│
+│   CSI（provisioner など各 1 + csi-plugin DaemonSet） … PVC → Longhorn ボリュームの作成・接続      │
+│   longhorn-ui（1、port-forward :8090）                                                          │
+│                                                                                                │
+│ StorageClass longhorn（default、レプリカ 2）                                                    │
+│   PVC ──▶ Longhorn ボリューム ──▶ レプリカ 2 つを別々のノードのディスクに置く（iSCSI で接続）   │
+│   使う側: SeaweedFS（フェーズ 1）、MLflow など（後のフェーズ）                                  │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
 ## フェーズ 1 時点
 
 ```

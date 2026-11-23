@@ -1,0 +1,13 @@
+# storageClassName を書かない → default StorageClass（longhorn）が使われることも同時に確かめる
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: check-data
+  namespace: longhorn-check
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,9 @@
+# Longhorn の動作確認用（フェーズ 0）。テスト用の PVC と、それを読み書きする Pod。
+# 適用: kubectl apply -k platform/manifests/longhorn-check（docs/setup/00-longhorn.md 手順 6）
+# 片付け: kubectl delete namespace longhorn-check（PVC を消すとボリュームのデータも消えるので、確認してから）
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - pod.yaml

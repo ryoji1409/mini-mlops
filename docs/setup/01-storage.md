@@ -7,7 +7,7 @@ SeaweedFS を入れて S3 API を使えるようにし、合成 MCAP を生成�
 
 ## 前提
 
-- クラスタに Longhorn が入っていて、StorageClass `longhorn` が default になっている（`kubectl get storageclass`）
+- フェーズ 0（[00-longhorn.md](00-longhorn.md)）が終わっている
 - `uv` / AWS CLI v2 / mcap CLI / `envsubst`（gettext）がある
 - コマンドはすべてリポジトリのルートで実行する
 
@@ -172,7 +172,7 @@ scripts/validate-mcap.sh "$CHECK_DIR"                           # OK=1 NG=0
 | 症状 | 原因と対処 |
 |---|---|
 | Pod が `ContainerCreating` のまま、`describe` に `secret "seaweedfs-s3-config" not found` | 手順 2 の前に SeaweedFS を入れた。手順 2 を実行すれば起動が進む |
-| PVC が `Pending` | StorageClass `longhorn` が無い / Longhorn が不調。`kubectl get storageclass` と `kubectl -n longhorn-system get pod` を確認 |
+| PVC が `Pending` | StorageClass `longhorn` が無い / Longhorn が不調。フェーズ 0 を確認 |
 | PVC は `Bound` だが Pod が `ContainerCreating`、`describe` に `FailedAttachVolume ... volume is currently in detached state with some un-schedulable replicas` | PVC が大きすぎて、どのノードの Longhorn ディスクにもレプリカを置けない（下の「PVC が置けないとき」） |
 | `envsubst: command not found` | gettext を入れる（`envsubst` は gettext に含まれる） |
 | `Could not connect to the endpoint URL: "http://localhost:8333/..."` | 手順 4 の port-forward が動いていない |

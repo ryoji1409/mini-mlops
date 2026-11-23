@@ -4,6 +4,8 @@
 # バージョンは必ず固定する（latest は使わない）。
 
 repositories:
+  - name: longhorn
+    url: https://charts.longhorn.io
   - name: seaweedfs
     url: https://seaweedfs.github.io/seaweedfs/helm
   - name: argo
@@ -12,12 +14,28 @@ repositories:
     url: https://ray-project.github.io/kuberay-helm/
 
 releases:
+  # 分散ブロックストレージ。default StorageClass `longhorn` を作る。フェーズ 0 で導入。
+  # 他の部品の PVC はすべてこれを使うので、最初に入れて起動を待つ（wait）。
+  # 先にノードの準備が必要（open-iscsi など）: docs/setup/00-longhorn.md 手順 2
+  - name: longhorn
+    namespace: longhorn-system
+    createNamespace: true
+    chart: longhorn/longhorn
+    version: 1.12.2
+    wait: true
+    timeout: 900
+    values:
+      - values/longhorn.yaml
+
   # S3 互換ストレージ。フェーズ 1 で導入。
+  # PVC を Longhorn に作るので、Longhorn の後に入れる（needs）
   - name: seaweedfs
     namespace: storage
     createNamespace: true
     chart: seaweedfs/seaweedfs
     version: 4.52.0
+    needs:
+      - longhorn-system/longhorn
     values:
       - values/seaweedfs.yaml
 
