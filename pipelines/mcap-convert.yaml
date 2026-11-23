@@ -1,0 +1,213 @@
+# MCAP 変換パイプライン（フェーズ 2）。
+#
+#   1. discover … raw の metadata.json と derived の _manifests / _quarantine を突き合わせ、未処理のセッションを数える
+#   2. convert  … 未処理が 1 件以上あれば RayJob を作り（Ray クラスタを立てて）Ray Data で変換する。
+#                  終わったら Ray クラスタは自動で消える（shutdownAfterJobFinishes）
+#   3. validate … DuckDB で Parquet の行数を数え、metadata.json の message_count と照合する
+#
+# 実行:  argo submit -n mlops --from workflowtemplate/mcap-convert --watch
+#        argo submit -n mlops --from workflowtemplate/mcap-convert -p force=true        # 作り直し
+# 登録:  docs/setup/02-pipeline.md の手順（OWNER を GitHub のユーザー名に置き換えて kubectl apply）
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: mcap-convert
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  entrypoint: main
+  serviceAccountName: mcap-pipeline
+  # GHCR（非公開）から変換器のイメージを取るための Secret（docs/setup/02-pipeline.md で作る）
+  imagePullSecrets:
+    - name: ghcr-pull
+  arguments:
+    parameters:
+      - name: converter-image
+        # タグ = apps/converter/pyproject.toml の version（= マニフェストに記録される変換器のバージョン）。
+        # version を上げたらここも上げる（変換器のテストで一致を確かめている）。
+        # OWNER は登録するときに GitHub のユーザー名に置き換える（docs/setup/02-pipeline.md）
+        value: ghcr.io/OWNER/mini-mlops-converter:0.1.0
+      - name: force
+        value: "false"
+        enum: ["false", "true"]
+        description: true にすると、変換済み・隔離済みのセッションも作り直す
+      - name: fail-on-quarantine
+        value: "false"
+        enum: ["false", "true"]
+        description: true にすると、隔離されたセッションがあればワークフローを失敗にする
+  # 同時に 2 つ走ると同じセッションを取り合うので、このテンプレートのワークフローは 1 つずつ動かす
+  # （フェーズ 3 で Kueue のキューに置き換える予定）
+  synchronization:
+    mutexes:
+      - name: mcap-convert
+  # ワークフロー全体の制限時間（1 時間）
+  activeDeadlineSeconds: 3600
+  # 完了したワークフローは 7 日後に消す（ログは s3://argo-artifacts に残っている）
+  ttlStrategy:
+    secondsAfterCompletion: 604800
+  # 成功した Pod は 10 分後に消す（失敗した Pod は調査のため残す）
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 10m
+
+  templates:
+    - name: main
+      steps:
+        - - name: discover
+            template: discover
+        - - name: convert
+            template: convert
+            # 未処理が 0 件なら Ray クラスタを立てずにスキップする
+            when: "{{steps.discover.outputs.parameters.pending}} > 0"
+        - - name: validate
+            template: validate
+
+    # 1. 未処理のセッションを数える（Ray は使わない軽い処理）
+    - name: discover
+      outputs:
+        parameters:
+          - name: pending
+            valueFrom:
+              path: /tmp/pending
+      container:
+        image: "{{workflow.parameters.converter-image}}"
+        command: [converter, discover, "--force={{workflow.parameters.force}}", --output-file, /tmp/pending]
+        envFrom:
+          - configMapRef: { name: pipeline-s3 }
+          - secretRef: { name: pipeline-s3-credentials }
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 512Mi }
+
+    # 2. RayJob を作って変換する。RayJob の状態を見張り、成功 / 失敗をワークフローに反映する
+    - name: convert
+      outputs:
+        parameters:
+          # 作られた RayJob の名前（ログを見るとき用: kubectl -n mlops logs job/<名前>）
+          - name: rayjob-name
+            valueFrom:
+              jsonPath: "{.metadata.name}"
+      resource:
+        action: create
+        # RayJob の持ち主をこのワークフローにする → ワークフローが消えると RayJob も消える
+        setOwnerReference: true
+        # Ray のジョブ（converter convert）が成功したら成功
+        successCondition: status.jobStatus == SUCCEEDED
+        # ジョブの失敗・期限切れ・submitter の失敗などは、すべて jobDeploymentStatus が Failed になる
+        failureCondition: status.jobDeploymentStatus == Failed
+        manifest: |
+          apiVersion: ray.io/v1
+          kind: RayJob
+          metadata:
+            generateName: mcap-convert-
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              app.kubernetes.io/component: converter
+          spec:
+            # Ray クラスタの head 上で実行されるコマンド（変換の本体）。未処理の判定は中でもう一度行う
+            entrypoint: converter convert --force={{workflow.parameters.force}}
+            # ジョブが終わったら Ray クラスタ（head / worker の Pod）を消す。
+            # 120 秒待つのは、終了直後の Ray Dashboard やログを確認できるようにするため
+            shutdownAfterJobFinishes: true
+            ttlSecondsAfterFinished: 120
+            # Ray クラスタの起動からジョブ終了までの制限時間（30 分）
+            activeDeadlineSeconds: 1800
+            # 失敗しても RayJob としては再試行しない（再実行はワークフローごとやり直す）
+            backoffLimit: 0
+            # ジョブを投入する Pod（K8sJobMode。`kubectl logs job/<RayJob 名>` でジョブのログを追える）
+            submitterPodTemplate:
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                imagePullSecrets:
+                  - name: ghcr-pull
+                containers:
+                  - name: ray-job-submitter
+                    image: "{{workflow.parameters.converter-image}}"
+                    resources:
+                      requests: { cpu: 100m, memory: 256Mi }
+                      limits: { cpu: 500m, memory: 512Mi }
+            rayClusterSpec:
+              rayVersion: "2.59.1"
+              # head: GCS・Dashboard・ジョブのドライバ（converter convert）が動く。
+              # num-cpus=0 にして、変換タスクは head に載せず worker だけで実行する
+              headGroupSpec:
+                rayStartParams:
+                  num-cpus: "0"
+                  # オブジェクトストア（共有メモリ）の上限。メモリ limit の内側から確保される
+                  object-store-memory: "200000000"
+                  dashboard-host: "0.0.0.0"
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/part-of: mini-mlops
+                  spec:
+                    automountServiceAccountToken: false
+                    imagePullSecrets:
+                      - name: ghcr-pull
+                    containers:
+                      - name: ray-head
+                        image: "{{workflow.parameters.converter-image}}"
+                        env:
+                          - name: CONVERTER_IMAGE
+                            value: "{{workflow.parameters.converter-image}}"
+                        envFrom:
+                          - configMapRef: { name: pipeline-s3 }
+                          - secretRef: { name: pipeline-s3-credentials }
+                        # Ray 2.59 の head は、Dashboard の子プロセスなどだけで約 2.3GB 使う
+                        resources:
+                          requests: { cpu: 500m, memory: 2560Mi }
+                          limits: { cpu: "1", memory: 3Gi }
+              # worker 2 台: read_mcap の読み取り・変換・書き込みのタスクが動く
+              workerGroupSpecs:
+                - groupName: cpu
+                  replicas: 2
+                  minReplicas: 2
+                  maxReplicas: 2
+                  rayStartParams:
+                    object-store-memory: "250000000"
+                  template:
+                    metadata:
+                      labels:
+                        app.kubernetes.io/part-of: mini-mlops
+                    spec:
+                      automountServiceAccountToken: false
+                      imagePullSecrets:
+                        - name: ghcr-pull
+                      containers:
+                        - name: ray-worker
+                          image: "{{workflow.parameters.converter-image}}"
+                          env:
+                            - name: CONVERTER_IMAGE
+                              value: "{{workflow.parameters.converter-image}}"
+                          envFrom:
+                            - configMapRef: { name: pipeline-s3 }
+                            - secretRef: { name: pipeline-s3-credentials }
+                          # CPU limit 1 → Ray は num-cpus=1 として扱う（同時に 1 タスク）
+                          resources:
+                            requests: { cpu: 500m, memory: 1Gi }
+                            limits: { cpu: "1", memory: 1280Mi }
+
+    # 3. DuckDB で行数を照合する
+    - name: validate
+      outputs:
+        parameters:
+          # 例: {"sessions": 7, "ok": 6, "quarantined": 1, "mismatch": 0, ...}
+          - name: summary
+            valueFrom:
+              path: /tmp/summary.json
+      container:
+        image: "{{workflow.parameters.converter-image}}"
+        command:
+          - converter
+          - validate
+          - "--fail-on-quarantine={{workflow.parameters.fail-on-quarantine}}"
+          - --summary-file
+          - /tmp/summary.json
+        envFrom:
+          - configMapRef: { name: pipeline-s3 }
+          - secretRef: { name: pipeline-s3-credentials }
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 512Mi }

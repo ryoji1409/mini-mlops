@@ -1,0 +1,12 @@
+# パイプライン（Argo のワークフロー Pod と RayJob）を動かす Namespace と、その最小限の権限。フェーズ 2 で導入。
+# 適用: kubectl apply -k platform/manifests/pipelines
+# Secret（S3 のキー・GHCR の pull 用）は秘密情報なのでここには置かず、docs/setup/02-pipeline.md 手順 4 で作る。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - limitrange.yaml
+  - serviceaccount.yaml
+  - role.yaml
+  - rolebinding.yaml
+  - configmap-s3.yaml

@@ -1,0 +1,19 @@
+# KubeRay operator（チャート kuberay-operator 1.7.2 / イメージ quay.io/kuberay/operator:v1.7.2）の設定。
+# フェーズ 2 で導入。RayCluster / RayJob を作ると、operator が Ray の head / worker の Pod を立てる。
+# Ray Data の read_mcap で MCAP を変換するジョブ（RayJob）を動かす。
+#
+# リソース予算（README の「方針」）: KubeRay operator で 0.5GB → limit 512Mi
+
+image:
+  repository: quay.io/kuberay/operator
+  tag: v1.7.2   # チャートの既定値と同じだが、明示して固定する
+  pullPolicy: IfNotPresent
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+
+# クラスタ全体の RayCluster / RayJob を監視する（既定）。RayJob は mlops に作る
+singleNamespaceInstall: false
+
+# 機能フラグはチャートの既定のまま（RayJobDeletionPolicy などが有効）

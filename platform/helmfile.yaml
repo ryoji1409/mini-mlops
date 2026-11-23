@@ -6,6 +6,10 @@
 repositories:
   - name: seaweedfs
     url: https://seaweedfs.github.io/seaweedfs/helm
+  - name: argo
+    url: https://argoproj.github.io/argo-helm
+  - name: kuberay
+    url: https://ray-project.github.io/kuberay-helm/
 
 releases:
   # S3 互換ストレージ。フェーズ 1 で導入。
@@ -17,3 +21,21 @@ releases:
     values:
       - values/seaweedfs.yaml
 
+  # ワークフローエンジン。フェーズ 2 で導入。
+  # controller / server は argo、ワークフローの Pod は mlops で動く（values 参照）
+  - name: argo-workflows
+    namespace: argo
+    createNamespace: true
+    chart: argo/argo-workflows
+    version: 2.0.18
+    values:
+      - values/argo-workflows.yaml
+
+  # Ray クラスタの operator（RayJob を作ると head / worker の Pod を立てる）。フェーズ 2 で導入。
+  - name: kuberay-operator
+    namespace: ray-system
+    createNamespace: true
+    chart: kuberay/kuberay-operator
+    version: 1.7.2
+    values:
+      - values/kuberay-operator.yaml

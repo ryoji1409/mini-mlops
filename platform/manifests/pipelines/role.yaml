@@ -1,0 +1,16 @@
+# mcap-pipeline に与える最小限の権限（mlops の中だけ）。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcap-pipeline
+  namespace: mlops
+rules:
+  # Argo の executor（各 Pod の wait コンテナ）が、ステップの結果（出力パラメータなど）を書き込むのに必要
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+  # resource テンプレートで RayJob を作り、状態（成功 / 失敗）を見張るのに必要。
+  # 削除は KubeRay（shutdownAfterJobFinishes）とワークフローの ownerReference に任せるので、delete は与えない
+  - apiGroups: ["ray.io"]
+    resources: ["rayjobs"]
+    verbs: ["create", "get", "list", "watch", "patch"]

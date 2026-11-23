@@ -10,6 +10,7 @@
 |---|---|---|
 | `validate-mcap.sh` | アップロード前の検証。セッションごとに、metadata.json と MCAP の sha256・サイズ、`mcap doctor`（構造チェック）、`mcap info` と metadata.json の一致を確かめる | [01-storage.md](../docs/setup/01-storage.md) 手順 7・9 |
 | `upload-raw.sh` | 検証を通ったセッションだけを raw ゾーンにアップロードする（sha256 で重複・上書きを防ぐ。`--dry-run` あり） | [01-storage.md](../docs/setup/01-storage.md) 手順 8 |
+| `lib/make_broken_session.py` | 正常なセッションから「途中で切れた MCAP」のセッションを作る（隔離の確認と、変換器のテストで使う） | [02-pipeline.md](../docs/setup/02-pipeline.md) 手順 10 |
 | `lib/common.sh` | 上の 2 つのシェルスクリプトの共通関数（.env の読み込み、sha256、JSON の値の取り出し） | — |
 | `lib/check_mcap_info.py` | `mcap info` の出力と metadata.json の突き合わせ（Python 標準ライブラリのみ） | — |
 

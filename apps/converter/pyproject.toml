@@ -1,0 +1,44 @@
+[project]
+name = "converter"
+version = "0.1.0"
+description = "raw ゾーンの MCAP を Ray Data で読み、derived ゾーンに Parquet（テレメトリ・フレームシャード）と系譜マニフェストを書く。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# バージョンは固定する。
+# 実行イメージ（rayproject/ray:2.59.1-py312-cpu）に最初から入っている版と揃えて、
+# イメージ内のパッケージを入れ替えないようにしている（pyarrow / protobuf など）。
+dependencies = [
+    "duckdb==1.5.6",
+    "mcap==1.6.0",
+    "pillow==13.0.0",
+    "protobuf==6.33.6",
+    "pyarrow==23.0.1",
+    "ray[data]==2.59.1",
+]
+
+[project.scripts]
+# `converter discover|convert|validate` で CLI を起動できるようにする
+converter = "converter.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+]
+
+[tool.uv]
+# 直接は使わないが、Ray イメージに入っている版と揃えたい間接依存を固定する。
+# （ここを外すと uv が新しい版を選び、イメージ作成時に入れ替わってしまう）
+constraint-dependencies = [
+    "fsspec==2023.12.1",
+    "lz4==4.4.5",
+    "numpy==2.2.6",
+    "pandas==2.3.3",
+    "zstandard==0.23.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

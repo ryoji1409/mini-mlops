@@ -6,6 +6,17 @@
         { "accessKey": "${AWS_ACCESS_KEY_ID}", "secretKey": "${AWS_SECRET_ACCESS_KEY}" }
       ],
       "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    },
+    {
+      "name": "pipeline",
+      "credentials": [
+        { "accessKey": "${PIPELINE_AWS_ACCESS_KEY_ID}", "secretKey": "${PIPELINE_AWS_SECRET_ACCESS_KEY}" }
+      ],
+      "actions": [
+        "Read:raw", "List:raw",
+        "Read:derived", "Write:derived", "List:derived",
+        "Read:argo-artifacts", "Write:argo-artifacts", "List:argo-artifacts"
+      ]
     }
   ]
 }

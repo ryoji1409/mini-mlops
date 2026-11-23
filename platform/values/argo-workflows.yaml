@@ -1,0 +1,86 @@
+# Argo Workflows（チャート argo-workflows 2.0.18 / アプリ v4.1.6）の設定。フェーズ 2 で導入。
+# パイプラインの各工程を WorkflowTemplate として動かすワークフローエンジン。
+#
+# 構成:
+#   namespace argo  … controller と server（UI / API）だけを置く
+#   namespace mlops … ワークフローの Pod・RayJob が動く場所（platform/manifests/pipelines で作る）
+#
+# リソース予算（README の「方針」）: Argo Workflows（controller + server）で 1GB
+#   → controller limit 512Mi + server limit 256Mi = 768Mi
+
+images:
+  # 既定の Always だと Pod 起動のたびにレジストリへ問い合わせる。タグを固定しているので IfNotPresent でよい
+  pullPolicy: IfNotPresent
+
+crds:
+  install: true
+  # チャートを消しても CRD（＝ワークフローの定義・履歴）は残す（CRD の削除はクラスタ全体に影響するため）
+  keep: true
+  # 完全版の CRD（スキーマ検証付き）を、フック Job（crdinstaller）で server-side apply する
+  full: true
+  upgradeJob:
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+
+controller:
+  # このコントローラが面倒を見る Namespace。ワークフローは mlops でだけ動かす
+  workflowNamespaces:
+    - mlops
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  # 完了したワークフローの保存件数などは WorkflowTemplate 側（ttlStrategy / podGC）で制御する
+
+# ワークフローを動かす ServiceAccount と RBAC はチャートでは作らない。
+# 権限を最小にしたいので、platform/manifests/pipelines で自分で定義する（mcap-pipeline）
+workflow:
+  serviceAccount:
+    create: false
+  rbac:
+    create: false
+
+server:
+  # 認証モード: server（UI にログインなしで入れる。権限は argo-server の ServiceAccount のもの）。
+  # ClusterIP のまま port-forward でだけ開くので、この検証環境では許容する（外部に公開する場合は sso / client にする）
+  authModes:
+    - server
+  serviceType: ClusterIP
+  secure: false
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# ワークフローの各 Pod に入る init / wait コンテナ（argoexec）のリソース
+executor:
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# WorkflowTemplate 側で resources を書き忘れたメインコンテナの既定値（すべての Pod に requests / limits を付けるための安全網）
+mainContainer:
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+# ログとアーティファクトの保存先（SeaweedFS の s3://argo-artifacts）
+useStaticCredentials: true
+artifactRepository:
+  # メインコンテナのログを S3 に保存する（Pod が消えても UI からログを見られる）
+  archiveLogs: true
+  s3:
+    bucket: argo-artifacts
+    # クラスタ内の SeaweedFS（S3 API）。別の S3 互換ストレージを使うときは endpoint を変え、TLS なら insecure を外す
+    endpoint: seaweedfs-all-in-one.storage.svc:8333
+    insecure: true
+    region: us-east-1
+    # SeaweedFS はバケットをパスに含める形式（http://host/bucket/key）で使う
+    addressingStyle: path
+    keyFormat: "{{workflow.namespace}}/{{workflow.name}}/{{pod.name}}"
+    # キーは、ワークフローが動く Namespace（mlops）の Secret から読む（docs/setup/02-pipeline.md 手順 4 で作る）
+    accessKeySecret:
+      name: pipeline-s3-credentials
+      key: AWS_ACCESS_KEY_ID
+    secretKeySecret:
+      name: pipeline-s3-credentials
+      key: AWS_SECRET_ACCESS_KEY

@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcap-pipeline
+  namespace: mlops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcap-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: mcap-pipeline
+    namespace: mlops

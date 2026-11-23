@@ -1,0 +1,12 @@
+# S3 の接続先（秘密ではない情報）。キーは Secret pipeline-s3-credentials（docs/setup/02-pipeline.md 手順 4）。
+# 変換器（apps/converter）は aws CLI と同じ標準の環境変数名で読むので、envFrom でそのまま渡せる。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-s3
+  namespace: mlops
+data:
+  AWS_ENDPOINT_URL: http://seaweedfs-all-in-one.storage.svc:8333
+  AWS_REGION: us-east-1
+  RAW_URI: s3://raw
+  DERIVED_URI: s3://derived

@@ -1,0 +1,12 @@
+# resources を書き忘れたコンテナに付く既定値（すべての Pod に requests / limits を付けるための安全網）。
+# Ray の head / worker やワークフローの各ステップは、それぞれのマニフェストで明示的に指定している。
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-resources
+  namespace: mlops
+spec:
+  limits:
+    - type: Container
+      default: { cpu: "1", memory: 512Mi }
+      defaultRequest: { cpu: 100m, memory: 128Mi }

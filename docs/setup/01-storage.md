@@ -20,16 +20,17 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-アクセスキーを作り、`.env` の `AWS_ACCESS_KEY_ID` などの空欄にエディタで書き込みます（2 つとも別の値にする）。
+アクセスキーを作り、`.env` の `AWS_ACCESS_KEY_ID` などの空欄にエディタで書き込みます（4 つとも別の値にする）。
 
 ```bash
-openssl rand -hex 10 | tr 'a-f' 'A-F'    # アクセスキー（20 文字）→ AWS_ACCESS_KEY_ID
-openssl rand -hex 20                     # シークレットキー（40 文字）→ AWS_SECRET_ACCESS_KEY
+openssl rand -hex 10 | tr 'a-f' 'A-F'    # アクセスキー（20 文字）→ AWS_ACCESS_KEY_ID、PIPELINE_AWS_ACCESS_KEY_ID
+openssl rand -hex 20                     # シークレットキー（40 文字）→ AWS_SECRET_ACCESS_KEY、PIPELINE_AWS_SECRET_ACCESS_KEY
 ```
 
 | ユーザー | `.env` の変数 | 権限 | 使う場所 |
 |---|---|---|---|
 | admin | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 全権限 | ホストからの管理・アップロード |
+| pipeline | `PIPELINE_AWS_ACCESS_KEY_ID` / `PIPELINE_AWS_SECRET_ACCESS_KEY` | `raw` 読み取りのみ、`derived` / `argo-artifacts` 読み書き | フェーズ 2 のクラスタ内のパイプライン |
 
 `.env` を後から作り直すと、SeaweedFS に登録したキーと食い違います（キーを変えたら手順 2 からやり直す）。
 `.env.example` に変数が増えたときは、増えた行だけを `.env` に書き足します。
@@ -38,13 +39,13 @@ openssl rand -hex 20                     # シークレットキー（40 文字�
 
 SeaweedFS は、Secret `storage/seaweedfs-s3-config` の JSON からユーザーとキーを読みます。
 雛形 [platform/templates/seaweedfs-s3-config.json](../../platform/templates/seaweedfs-s3-config.json) の `${…}` を `.env` の値で埋めて Secret にします
-（後のフェーズで、`Read:raw` のように「操作:バケット名」と書いて権限を絞ったユーザーを足せる）。
+（`Read:raw` のように「操作:バケット名」と書くと、そのバケットだけに権限を絞れる。`Write` には削除も含まれる）。
 
 ```bash
 set -a; source .env; set +a              # .env の変数をこのシェルに読み込む（以降の手順でも使う）
 
 kubectl create namespace storage --dry-run=client -o yaml | kubectl apply -f -
-envsubst '$AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY' \
+envsubst '$AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY $PIPELINE_AWS_ACCESS_KEY_ID $PIPELINE_AWS_SECRET_ACCESS_KEY' \
   < platform/templates/seaweedfs-s3-config.json \
   | kubectl -n storage create secret generic seaweedfs-s3-config \
       --from-file=seaweedfs_s3_config=/dev/stdin --dry-run=client -o yaml \
@@ -90,7 +91,7 @@ aws s3 ls        # エラーなく終われば OK（バケットを作る前は�
 ## 5. バケットを作る
 
 ```bash
-for b in raw derived curated mlflow vectors; do
+for b in raw derived curated mlflow vectors argo-artifacts; do
   aws s3api head-bucket --bucket "$b" 2>/dev/null && echo "既にあります: $b" || aws s3api create-bucket --bucket "$b"
 done
 aws s3 ls
@@ -99,10 +100,11 @@ aws s3 ls
 | バケット | 中身 |
 |---|---|
 | `raw` | 生の MCAP と metadata.json（正本。変更しない） |
-| `derived` | 変換後のデータ（Parquet、フレームのシャード） |
+| `derived` | 変換後のデータ（Parquet、フレームのシャード）。フェーズ 2 |
 | `curated` | 学習用に整えたデータセット |
 | `mlflow` | MLflow の artifact |
 | `vectors` | LanceDB のテーブル |
+| `argo-artifacts` | Argo Workflows のログ・アーティファクト。フェーズ 2 |
 
 `AWS_REGION` を `us-east-1` 以外にした場合は、`create-bucket` に `--create-bucket-configuration LocationConstraint=$AWS_REGION` が必要です（S3 の仕様）。
 

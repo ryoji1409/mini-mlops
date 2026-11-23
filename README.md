@@ -35,6 +35,8 @@ CPU だけの小さな Kubernetes クラスタで組み立てて動かす検証�
 - AWS CLI v2（S3 API の操作）
 - `envsubst`（gettext。設定の雛形にキーを埋める）
 - Foxglove の mcap CLI v0.4.0（MCAP の検証）
+- argo CLI v4.1.6（クラスタの Argo Workflows と揃える）
+- Docker（buildx。変換器イメージのビルド）
 
 ## フェーズと手順
 
@@ -43,7 +45,7 @@ CPU だけの小さな Kubernetes クラスタで組み立てて動かす検証�
 | フェーズ | 内容 | 手順書 |
 |---|---|---|
 | 1 | S3 互換ストレージ（SeaweedFS）の構築と、合成 MCAP の生成・検証・アップロード | [docs/setup/01-storage.md](docs/setup/01-storage.md) |
-| 2 | Ray Data による MCAP 変換を Argo Workflows から実行 |
+| 2 | Ray Data による MCAP 変換を Argo Workflows から実行 | [docs/setup/02-pipeline.md](docs/setup/02-pipeline.md) |
 | 3 | Kueue の導入 | |
 | 4 | CPU で分散学習（Kubeflow Trainer v2）と MLflow | |
 | 5 | 画像埋め込みと LanceDB での検索 | |
@@ -53,7 +55,9 @@ CPU だけの小さな Kubernetes クラスタで組み立てて動かす検証�
 | パス | 中身 |
 |---|---|
 | `docs/` | 手順書（`setup/`）、構成図とデータの流れ（architecture.md） |
-| `platform/` | Helmfile で入れる基盤部品（SeaweedFS）、設定の雛形（`templates/`） |
+| `platform/` | Helmfile で入れる基盤部品（SeaweedFS / Argo Workflows / KubeRay）、自前のマニフェスト（`manifests/`）、設定の雛形（`templates/`） |
 | `apps/mcap-generator/` | 合成 MCAP 生成器（uv プロジェクト、ホストで実行） |
+| `apps/converter/` | MCAP → Parquet 変換器（Ray Data、uv プロジェクト + Dockerfile） |
+| `pipelines/` | Argo WorkflowTemplate（フェーズ 2: mcap-convert） |
 | `scripts/` | 手作業では難しい処理だけのスクリプト（MCAP の検証、raw へのアップロード） |
 | `output/` | 生成した MCAP の置き場（.gitignore 済み） |
