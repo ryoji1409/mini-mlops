@@ -109,10 +109,18 @@ def make_scenarios(
     min_duration_s: int,
     max_duration_s: int,
     start_date: date,
+    first_device: int = 1,
 ) -> list[SessionScenario]:
-    """全デバイス・全セッションの条件をまとめて作る。"""
+    """全デバイス・全セッションの条件をまとめて作る。
+
+    first_device はデバイス番号の始まり（1 なら dev-001 から）。
+    既にアップロード済みのデータと ID が重ならないデータを追加で作るときに、番号をずらして使う
+    （例: first_device=11 → dev-011, dev-012, …）。番号をずらしても乱数の使い方は変わらない。
+    """
     if not 1 <= min_duration_s <= max_duration_s:
         raise ValueError("duration の指定が不正です（1 <= min <= max）")
+    if first_device < 1:
+        raise ValueError("first_device は 1 以上を指定してください")
 
     rng = random.Random(seed)
     conditions = _condition_cycle(rng)
@@ -120,7 +128,7 @@ def make_scenarios(
     used_session_ids: set[str] = set()
 
     for v in range(num_devices):
-        device_id = device_id_of(v)
+        device_id = device_id_of(first_device - 1 + v)
         for _ in range(sessions_per_device):
             time_of_day, weather = next(conditions)
             # セッション ID が衝突しないよう、万一重なったら時刻を選び直す

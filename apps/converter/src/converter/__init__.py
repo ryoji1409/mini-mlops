@@ -1,4 +1,4 @@
-"""MCAP → Parquet 変換器（フェーズ 2）。
+"""MCAP → Parquet 変換器（フェーズ 2。フェーズ 3 でデバイスごとの絞り込みを追加）。
 
 raw ゾーン（s3://raw）の MCAP を Ray Data の read_mcap で読み、
 derived ゾーン（s3://derived）にテレメトリの Parquet・フレームのシャード・系譜マニフェストを書く。

@@ -1,13 +1,14 @@
 """コマンドラインの入口。
 
-    converter discover [--force] [--session-id ID ...] [--output-file PATH]
+    converter discover [--force] [--session-id ID ...] [--device-id ID ...] [--output-file PATH]
         未処理のセッションを数える（Argo の discover ステップ）。件数を --output-file に書く
-    converter convert  [--force] [--session-id ID ...]
+    converter convert  [--force] [--session-id ID ...] [--device-id ID ...]
         Ray で変換する（RayJob の entrypoint）
-    converter validate [--fail-on-quarantine] [--summary-file PATH]
+    converter validate [--fail-on-quarantine] [--device-id ID ...] [--summary-file PATH]
         DuckDB で行数を検証する（Argo の validate ステップ）
 
 --force は Argo のパラメータをそのまま渡せるように、--force / --force=true / --force=false のどれでも受け付ける。
+--device-id も同じ理由で、空の値（--device-id=）は「指定なし = 全デバイス」として扱う。
 """
 
 from __future__ import annotations
@@ -32,9 +33,19 @@ def _bool(value: str) -> bool:
     raise argparse.ArgumentTypeError(f"true / false を指定してください: {value}")
 
 
+def _add_device_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--device-id", action="append", default=None, help="対象のデバイスを絞る（複数指定可。空なら全デバイス）")
+
+
+def _device_ids(args: argparse.Namespace) -> set[str]:
+    """--device-id の値を集合にする。Argo のパラメータが空のとき（--device-id=）は除く → 空集合 = 全デバイス。"""
+    return {d.strip() for d in (args.device_id or []) if d.strip()}
+
+
 def _add_target_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--force", type=_bool, nargs="?", const=True, default=False, help="変換済み・隔離済みのセッションも作り直す")
     p.add_argument("--session-id", action="append", default=None, help="対象のセッションを絞る（複数指定可）")
+    _add_device_arg(p)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -51,6 +62,7 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("validate", help="DuckDB で行数を検証する")
     p.add_argument("--fail-on-quarantine", type=_bool, nargs="?", const=True, default=False, help="隔離されたセッションがあれば失敗にする")
     p.add_argument("--summary-file", type=Path, help="検証結果の集計（JSON）を書き出すファイル")
+    _add_device_arg(p)
     return parser
 
 
@@ -61,7 +73,7 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     settings = load_settings()
     raw = open_location(settings.raw_uri, settings.s3)
     derived = open_location(settings.derived_uri, settings.s3)
-    result = find_pending(raw, derived, settings.converter_version, args.force, set(args.session_id or []))
+    result = find_pending(raw, derived, settings.converter_version, args.force, set(args.session_id or []), _device_ids(args))
     log_summary(result)
     if args.output_file:
         args.output_file.write_text(f"{len(result.pending)}\n")
@@ -72,7 +84,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     # ray は import に時間がかかるので、convert のときだけ読み込む
     from converter.pipeline import run_convert
 
-    report = run_convert(load_settings(), args.force, set(args.session_id or []))
+    report = run_convert(load_settings(), args.force, set(args.session_id or []), _device_ids(args))
     logging.getLogger("converter").info("変換結果: %s", json.dumps(asdict(report), ensure_ascii=False))
     # 隔離されたセッションがあっても、変換処理そのものは成功（0）とする。判定は validate ステップで行う。
     # 処理側の問題で失敗したセッション（failed）があれば 1 を返し、RayJob → ワークフローを失敗にする
@@ -82,7 +94,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 def _cmd_validate(args: argparse.Namespace) -> int:
     from converter.validate import run_validate
 
-    return run_validate(load_settings(), args.fail_on_quarantine, args.summary_file)
+    return run_validate(load_settings(), args.fail_on_quarantine, args.summary_file, _device_ids(args))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,13 @@
+# ResourceFlavor: 「どの種類のノードの CPU / メモリか」を表す。
+# このクラスタのワーカーは全部同じ構成なので、1 種類だけにする。
+# nodeLabels を書かない = 特定のノードに縛らない（control-plane には taint があるので、どのみち載らない）。
+#
+# クラウドでよくある「オンデマンドと Spot の使い分け」を真似るなら、ノードにラベルを付けて flavor を 2 つに分け、
+# ClusterQueue の flavors に順番に並べる（前の flavor の枠が埋まったら次を使う）。
+# ここでは 5 台を分けるとそれぞれの枠が変換 1 本分（1.6 CPU）に満たなくなるので、分けていない。
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: cpu-standard
+  labels:
+    app.kubernetes.io/part-of: mini-mlops

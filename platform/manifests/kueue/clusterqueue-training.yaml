@@ -1,0 +1,33 @@
+# 学習ジョブ（フェーズ 4 の TrainJob、ワーカー 2）用の ClusterQueue。
+#
+#   nominalQuota   2 CPU / 4.5Gi … README のメモリ予算「Kubeflow Trainer + 学習ジョブ 4GB」に合わせる
+#   borrowingLimit 2 CPU / 5.5Gi … data-processing が空いていれば、その枠を借りられる
+#
+# プリエンプションは使わないので、data-processing が training の枠を借りて変換している間に学習を投げると、
+# 学習はその変換が終わる（枠が返る）まで待つ。変換は数分で終わるので、それでよしとする。
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: training
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  cohortName: mlops
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: training
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: cpu-standard
+          resources:
+            - name: cpu
+              nominalQuota: "2"
+              borrowingLimit: "2"
+            - name: memory
+              nominalQuota: 4.5Gi
+              borrowingLimit: 5.5Gi
+  preemption:
+    withinClusterQueue: Never
+    reclaimWithinCohort: Never

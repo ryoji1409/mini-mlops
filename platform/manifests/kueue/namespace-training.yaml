@@ -1,0 +1,23 @@
+# 学習ジョブ（フェーズ 4 の Kubeflow Trainer の TrainJob）を動かす Namespace。
+# 今は LocalQueue と、確認用の Job（platform/manifests/kueue-check）を置くだけ。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: training
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+---
+# resources を書き忘れたコンテナの既定値（すべての Pod に requests / limits を付けるための安全網）。
+# Kueue は requests でクォータを数えるので、requests の無いコンテナを作らないことも兼ねる
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-resources
+  namespace: training
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  limits:
+    - type: Container
+      default: { cpu: "1", memory: 512Mi }
+      defaultRequest: { cpu: 100m, memory: 128Mi }

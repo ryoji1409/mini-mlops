@@ -1,0 +1,11 @@
+# 任意の観察用: プリエンプション（優先度の高いジョブが低いジョブを追い出す）を有効にした別のキュー。
+# docs/setup/03-kueue.md 手順 11。この検証の運用方針（待たせるだけ）とは別に、追い出されたときの RayJob の動きを見るためだけに使う。
+# 終わったら kubectl delete -k platform/manifests/kueue-preemption-test で消す（元の data-processing / training は変えない）。
+#
+# 注意: このキューの枠は Cohort に入れていないので、data-processing とは別勘定になる。
+#       両方で同時に変換を動かすと、クォータの合計が実際のノードの空きを超えるので、観察中は data-processing に投げないこと。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clusterqueue.yaml
+  - localqueue.yaml

@@ -196,11 +196,16 @@ def _collect(ctx: _ConvertContext, refs: list[SessionRef], rows: list[dict[str, 
             report.quarantined[ref.session_id] = f"read: {err}"
 
 
-def run_convert(settings: Settings, force: bool = False, session_ids: set[str] | None = None) -> ConvertReport:
-    """convert コマンドの本体。"""
+def run_convert(
+    settings: Settings,
+    force: bool = False,
+    session_ids: set[str] | None = None,
+    device_ids: set[str] | None = None,
+) -> ConvertReport:
+    """convert コマンドの本体。device_ids を渡すと、そのデバイスのセッションだけを変換する。"""
     raw = open_location(settings.raw_uri, settings.s3)
     derived = open_location(settings.derived_uri, settings.s3)
-    found = find_pending(raw, derived, settings.converter_version, force, session_ids)
+    found = find_pending(raw, derived, settings.converter_version, force, session_ids, device_ids)
     log_summary(found)
     report = ConvertReport(skipped={d: s for d, s in found.states.items() if s in ("converted", "quarantined")})
     if not found.pending:

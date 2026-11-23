@@ -1,0 +1,24 @@
+# 変換 1 本分の枠（2 CPU / 5.5Gi）だけを持ち、同じキューの中で優先度の低いジョブを追い出せる ClusterQueue。
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: preemption-test
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: mlops
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: cpu-standard
+          resources:
+            - name: cpu
+              nominalQuota: "2"
+            - name: memory
+              nominalQuota: 5.5Gi
+  preemption:
+    # 枠が足りないとき、同じキューで動いている「より優先度の低い」ジョブを止めて枠を空ける
+    withinClusterQueue: LowerPriority

@@ -2,6 +2,8 @@
 
 使い方の例:
     uv run mcap-generate --devices 2 --sessions-per-device 3 --out ./output --seed 42
+    # 既存のデータと ID が重ならないように、dev-011 から 4 台 × 5 セッションを追加で作る
+    uv run mcap-generate --first-device 11 --devices 4 --sessions-per-device 5 --out ./output --seed 7
 """
 
 import argparse
@@ -21,6 +23,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--devices", type=int, default=2, help="デバイス数（既定: 2）")
     p.add_argument("--sessions-per-device", type=int, default=3, help="デバイス 1 台あたりのセッション数（既定: 3）")
+    p.add_argument(
+        "--first-device",
+        type=int,
+        default=1,
+        help="デバイス番号の始まり（既定: 1 → dev-001）。既存のデータと重ならないデータを追加で作るときにずらす",
+    )
     p.add_argument("--out", type=Path, default=Path("output"), help="出力先ディレクトリ（既定: ./output）")
     p.add_argument("--seed", type=int, default=42, help="乱数シード。同じ値なら同じファイルができる（既定: 42）")
     p.add_argument("--min-duration", type=int, default=30, help="記録時間の最小 [秒]（既定: 30）")
@@ -32,8 +40,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="記録日の起点（YYYY-MM-DD）。ここから 14 日の範囲に記録日をばらまく（既定: 2026-11-01）",
     )
     args = p.parse_args(argv)
-    if args.devices < 1 or args.sessions_per_device < 1:
-        p.error("--devices と --sessions-per-device は 1 以上を指定してください")
+    if args.devices < 1 or args.sessions_per_device < 1 or args.first_device < 1:
+        p.error("--devices・--sessions-per-device・--first-device は 1 以上を指定してください")
     return args
 
 
@@ -46,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         min_duration_s=args.min_duration,
         max_duration_s=args.max_duration,
         start_date=args.start_date,
+        first_device=args.first_device,
     )
     print(f"{len(scenarios)} セッション分の MCAP を {args.out} に生成します（seed={args.seed}）")
 

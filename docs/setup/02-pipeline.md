@@ -111,6 +111,10 @@ docker buildx imagetools inspect "$IMAGE" | head -4
 `pipelines/mcap-convert.yaml` のイメージ名 `ghcr.io/OWNER/...` の `OWNER` を自分のユーザー名に置き換えて登録します
 （タグは pyproject.toml の version と揃えてあり、変換器のテストで一致を確かめています）。
 
+**フェーズ 3 以降のテンプレートは、RayJob を Kueue のキュー経由で動かします**（`suspend: true` で作り、Kueue が受け入れたら動く）。
+まっさらなクラスタで順に進めている場合は、この手順の前に [03-kueue.md](03-kueue.md) の手順 2〜3 で Kueue とキューを入れておきます
+（入れないと RayJob が `Suspended` のまま動きません）。
+
 ```bash
 sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" pipelines/mcap-convert.yaml | kubectl apply -f -
 kubectl -n mlops get workflowtemplate mcap-convert
@@ -254,6 +258,7 @@ aws s3 rm s3://derived/_quarantine/dev-901-20261101T000000Z.json
 | discover が `AccessDenied` / `InvalidAccessKeyId` | pipeline ユーザーのキーが SeaweedFS に登録されていない。手順 2（フェーズ 1 の手順 2 と再起動） |
 | ワークフローのステップが `failed to get artifact repository` / ログ保存で `AccessDenied` | Secret `pipeline-s3-credentials` が無い、`argo-artifacts` バケットが無い、または SeaweedFS の再起動忘れ |
 | convert が `forbidden: ... cannot create resource "rayjobs"` | Role が無い。手順 3 |
-| ワークフローが `Pending` のまま、`waiting for lock` | 別の mcap-convert が動いている（1 つずつ実行）。`argo list -n mlops` |
+| ワークフローが `Pending` のまま、`waiting for lock` | 同じデバイスの mcap-convert が動いている（デバイスごとに 1 つずつ実行）。`argo list -n mlops` |
+| convert が終わらず、RayJob が `Suspended` のまま | フェーズ 3 版のテンプレートは Kueue のキューを通る。Kueue が入っていなければ [03-kueue.md](03-kueue.md) 手順 2〜3 で入れる |
 
 変換器・ワークフロー固有のエラーは [pipelines/README.md](../../pipelines/README.md) と [apps/converter/README.md](../../apps/converter/README.md) の「よくあるエラー」を参照。

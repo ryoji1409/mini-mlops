@@ -161,6 +161,29 @@ def test_cli_discover_counts_pending(lake: tuple[Path, Path], monkeypatch, tmp_p
     assert out.read_text().strip() == "1"
 
 
+def test_device_idで対象を絞れる(lake: tuple[Path, Path], monkeypatch, tmp_path: Path) -> None:
+    """--device-id で、そのデバイスのセッションだけを数える・変換する・検証する（フェーズ 3 の並行実行用）。"""
+    raw, derived = lake
+    monkeypatch.setenv("RAW_URI", str(raw))
+    monkeypatch.setenv("DERIVED_URI", str(derived))
+    out = tmp_path / "pending"
+    # lake には dev-001 の正常 2 本と、dev-901 の壊れた 1 本がある
+    assert main(["discover", "--device-id", "dev-001", "--output-file", str(out)]) == 0
+    assert out.read_text().strip() == "2"
+    # Argo のパラメータが空のとき（--device-id=）は全デバイス
+    assert main(["discover", "--device-id=", "--output-file", str(out)]) == 0
+    assert out.read_text().strip() == "3"
+
+    # dev-001 だけ変換すると、dev-901 には手を付けない
+    s = _settings(raw, derived)
+    report = run_convert(s, device_ids={"dev-001"})
+    assert len(report.converted) == 2 and not report.quarantined
+    assert not (derived / "_quarantine").exists()
+    # dev-001 に絞った検証は OK。全体の検証は dev-901 が未変換（MISSING）なので NG
+    assert run_validate(s, device_ids={"dev-001"}) == 0
+    assert run_validate(s) == 1
+
+
 def test_count_mismatch_is_not_written(lake: tuple[Path, Path]) -> None:
     """行が重複したメッセージを渡されたら、何も書かずに CountMismatchError（隔離もしない）。"""
     import pyarrow as pa

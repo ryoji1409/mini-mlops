@@ -1,0 +1,21 @@
+# LocalQueue: Namespace の中から見える「キューの入口」。ジョブは kueue.x-k8s.io/queue-name: <LocalQueue 名> で指定する。
+# 入口（LocalQueue）は Namespace ごと、実際の枠（ClusterQueue）はクラスタ全体、という 2 段構え。
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: data-processing
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  clusterQueue: data-processing
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: training
+  namespace: training
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  clusterQueue: training

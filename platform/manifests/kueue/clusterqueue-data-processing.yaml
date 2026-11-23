@@ -1,0 +1,40 @@
+# 変換ジョブ（mcap-convert の RayJob）用の ClusterQueue。
+#
+# クォータの考え方（詳しくは docs/architecture.md の「フェーズ 3」）:
+#   変換 1 本 = head 500m/2560Mi + worker 2 × 500m/1Gi + submitter 100m/256Mi = 1.6 CPU / 4.75Gi（requests の合計）
+#   nominalQuota（自分の枠）  2 CPU / 5.5Gi … 変換 1 本分
+#   borrowingLimit（借りる上限）2 CPU / 4.5Gi … training が空いていれば、その枠を全部借りて 2 本目を動かせる
+#   3 本目は Cohort 全体の枠（4 CPU）を超えるので、必ず待つ（= 実際のノードの空き 約 4.5 CPU の内側に収める）
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: data-processing
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  cohortName: mlops
+  # この ClusterQueue を使える Namespace（LocalQueue を作ってよい Namespace）を mlops に限る
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: mlops
+  # 並べ方: 優先度の高い順 → 同じ優先度なら古い順。
+  # BestEffortFIFO は、先頭が枠に入らなくても、後ろの入るジョブを先に通す（StrictFIFO は先頭が入るまで全員待つ）
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: cpu-standard
+          resources:
+            - name: cpu
+              nominalQuota: "2"
+              borrowingLimit: "2"
+            - name: memory
+              nominalQuota: 5.5Gi
+              borrowingLimit: 4.5Gi
+  # プリエンプション（実行中のジョブを止めて枠を空ける）は使わない。「待たせるだけ」で運用する。
+  # （既定値も Never だが、方針として明示する）
+  #   withinClusterQueue  … 同じキュー内で、優先度の低いジョブを止めて高いジョブを入れるか
+  #   reclaimWithinCohort … 貸した枠を取り返すために、借りている相手のジョブを止めるか
+  preemption:
+    withinClusterQueue: Never
+    reclaimWithinCohort: Never

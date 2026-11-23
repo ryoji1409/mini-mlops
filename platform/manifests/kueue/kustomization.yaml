@@ -1,0 +1,13 @@
+# Kueue のキュー定義（フェーズ 3）。Kueue 本体（helmfile の kueue）を入れてから適用する。
+# 適用: kubectl apply -k platform/manifests/kueue
+# 設計の理由（クォータの値など）は docs/architecture.md の「フェーズ 3」。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace-training.yaml
+  - resourceflavor.yaml
+  - cohort.yaml
+  - clusterqueue-data-processing.yaml
+  - clusterqueue-training.yaml
+  - localqueues.yaml
+  - workloadpriorityclasses.yaml

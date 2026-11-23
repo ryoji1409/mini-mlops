@@ -1,0 +1,9 @@
+# Cohort: クォータを貸し借りできる ClusterQueue のグループ。
+# data-processing と training がここに属し、相手が使っていない枠を借りられる。
+# （ClusterQueue の cohortName に名前を書けば Cohort は暗黙に作られるが、kubectl get cohort で見えるよう明示する）
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Cohort
+metadata:
+  name: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops

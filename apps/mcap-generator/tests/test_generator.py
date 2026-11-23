@@ -28,6 +28,15 @@ def test_6セッションなら時間帯と天候の組み合わせが全部1回
     assert len(combos) == len(TIME_OF_DAY_CHOICES) * len(WEATHER_CHOICES)
 
 
+def test_first_deviceでデバイス番号をずらせる() -> None:
+    # 既定（dev-001 から）は今までと同じ ID になる（アップロード済みのデータと一致させるため）
+    assert {s.device_id for s in _scenarios()} == {"dev-001", "dev-002"}
+    shifted = make_scenarios(4, 2, 7, 2, 2, date(2026, 11, 1), first_device=11)
+    assert sorted({s.device_id for s in shifted}) == ["dev-011", "dev-012", "dev-013", "dev-014"]
+    # セッション ID もデバイス ID から作るので、既定のデータとは重ならない
+    assert all(s.session_id.startswith(s.device_id + "-") for s in shifted)
+
+
 def test_セッションIDは一意() -> None:
     scenarios = _scenarios(devices=3, sessions=10)
     assert len({s.session_id for s in scenarios}) == len(scenarios)

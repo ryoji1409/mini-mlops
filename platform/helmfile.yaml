@@ -57,3 +57,16 @@ releases:
     version: 1.7.2
     values:
       - values/kuberay-operator.yaml
+
+  # ジョブのキューイング（クォータの枠が空いたらジョブを受け入れる）。フェーズ 3 で導入。
+  # チャートは OCI レジストリ（registry.k8s.io）から取る。キューの定義は manifests/kueue/（CRD が入ってから apply する）。
+  # webhook が動き出すまで待つ（wait）。待たずにキューを作ると webhook に繋がらずエラーになるため
+  - name: kueue
+    namespace: kueue-system
+    createNamespace: true
+    chart: oci://registry.k8s.io/kueue/charts/kueue
+    version: 0.20.7
+    wait: true
+    timeout: 600
+    values:
+      - values/kueue.yaml

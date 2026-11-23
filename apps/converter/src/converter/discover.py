@@ -25,11 +25,26 @@ class DiscoverResult:
     invalid_metadata: list[str]  # 読めなかった metadata.json（変換対象にできない）
 
 
-def list_raw_sessions(raw: Location) -> tuple[list[SessionRef], list[str]]:
-    """raw ゾーンの全セッションを列挙する。metadata.json を起点にする（最後にアップロードされる = 揃った印）。"""
+def _raw_prefixes(device_ids: set[str] | None) -> list[str]:
+    """raw を一覧するときのディレクトリ。デバイスの指定があれば、そのデバイスの下だけを見る。
+
+    raw のキーは device=<id>/date=…/session_id=…/ の順なので、デバイスで絞るときは
+    「device=<id>/」の下だけを一覧すればよい（他のデバイスの metadata.json を読まずに済む）。
+    """
+    if not device_ids:
+        return [""]  # 指定なし = raw 全体
+    return [f"device={d}" for d in sorted(device_ids)]
+
+
+def list_raw_sessions(raw: Location, device_ids: set[str] | None = None) -> tuple[list[SessionRef], list[str]]:
+    """raw ゾーンのセッションを列挙する。metadata.json を起点にする（最後にアップロードされる = 揃った印）。
+
+    device_ids を渡すと、そのデバイスのセッションだけを返す（None / 空なら全デバイス）。
+    """
     refs: list[SessionRef] = []
     invalid: list[str] = []
-    for key in list_files(raw, "", suffix="/metadata.json"):
+    keys = [k for prefix in _raw_prefixes(device_ids) for k in list_files(raw, prefix, suffix="/metadata.json")]
+    for key in keys:
         try:
             refs.append(session_ref_from_metadata(key, read_bytes(raw, key)))
         except Exception as e:  # noqa: BLE001  1 つ壊れていても他のセッションは続ける
@@ -44,14 +59,17 @@ def find_pending(
     converter_version: str,
     force: bool = False,
     session_ids: set[str] | None = None,
+    device_ids: set[str] | None = None,
 ) -> DiscoverResult:
     """変換が必要なセッションを返す。
 
     - force=False: マニフェストも隔離記録も「同じ入力 sha256・同じ変換器バージョン」でなければ対象
     - force=True : 状態に関係なくすべて対象（作り直し）
     - session_ids  : 指定したときは、そのセッションだけに絞る
+    - device_ids   : 指定したときは、そのデバイスのセッションだけに絞る
+                     （フェーズ 3: デバイスごとに別々のワークフロー / RayJob で並行に変換するため）
     """
-    refs, invalid = list_raw_sessions(raw)
+    refs, invalid = list_raw_sessions(raw, device_ids)
     if session_ids:
         refs = [r for r in refs if r.session_id in session_ids]
     states: dict[str, str] = {}

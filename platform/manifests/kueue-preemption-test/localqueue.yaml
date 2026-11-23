@@ -1,0 +1,10 @@
+# mcap-convert から -p queue-name=preemption-test で指定する入口
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: preemption-test
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  clusterQueue: preemption-test

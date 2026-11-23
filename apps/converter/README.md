@@ -5,13 +5,13 @@
 raw ゾーン（`s3://raw`）の MCAP を **Ray Data の `read_mcap`** で読み、derived ゾーン（`s3://derived`）に
 テレメトリの Parquet・カメラフレームのシャード・系譜マニフェストを書く変換器です。
 クラスタでは Argo の WorkflowTemplate `mcap-convert`（[pipelines/](../../pipelines/README.md)）から
-RayJob として実行されます。
+RayJob として実行されます（フェーズ 3 からは Kueue のキュー経由）。
 
 | コマンド | 役割 | どこで動くか |
 |---|---|---|
-| `converter discover [--force] [--session-id ID]` | 未処理のセッションを数える | Argo の discover ステップ（Ray は使わない） |
-| `converter convert [--force] [--session-id ID]` | Ray で変換する | RayJob の entrypoint（Ray head 上のドライバ） |
-| `converter validate [--fail-on-quarantine]` | DuckDB で行数を照合する | Argo の validate ステップ |
+| `converter discover [--force] [--session-id ID] [--device-id ID]` | 未処理のセッションを数える | Argo の discover ステップ（Ray は使わない） |
+| `converter convert [--force] [--session-id ID] [--device-id ID]` | Ray で変換する | RayJob の entrypoint（Ray head 上のドライバ） |
+| `converter validate [--fail-on-quarantine] [--device-id ID]` | DuckDB で行数を照合する | Argo の validate ステップ |
 
 ### 出力（derived ゾーン）
 
@@ -82,15 +82,19 @@ cd apps/converter
 uv run converter discover
 uv run converter convert                    # その場でローカルの Ray が立ち上がる
 uv run converter validate
+uv run converter discover --device-id dev-011   # デバイスで絞る（discover / convert / validate 共通。空なら全デバイス）
 ```
+
+`--device-id` で絞ると、raw は `device=<id>/` の下だけを一覧し、validate も `device=<id>` の Parquet だけを数えます。
+デバイスごとのワークフローが並行して動くとき、他のデバイスの書きかけのファイルを「残骸」と誤判定しないためです（フェーズ 3）。
 
 ### イメージのビルドと push
 
 GHCR への push の手順は [docs/setup/02-pipeline.md](../../docs/setup/02-pipeline.md) 手順 6。ローカルでビルドだけするなら:
 
 ```bash
-docker buildx build --build-arg CONVERTER_VERSION=0.1.0 --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
-  --tag mini-mlops-converter:0.1.0-local --load apps/converter       # リポジトリのルートで
+docker buildx build --build-arg CONVERTER_VERSION=0.2.0 --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+  --tag mini-mlops-converter:0.2.0-local --load apps/converter       # リポジトリのルートで
 ```
 
 - タグ = `pyproject.toml` の version。コードを変えたら version と `pipelines/mcap-convert.yaml` のタグを上げる（テストで一致を確かめている）。
@@ -105,7 +109,7 @@ docker buildx build --build-arg CONVERTER_VERSION=0.1.0 --build-arg GIT_COMMIT=$
 cd apps/converter && uv run pytest -q
 ```
 
-期待される出力: `7 passed`
+期待される出力: `9 passed`
 
 ```bash
 # クラスタで変換したあと（port-forward と .env が必要）
@@ -120,7 +124,7 @@ aws s3 cp s3://derived/_manifests/<session_id>.json - | python3 -m json.tool | h
 {
   "status": "converted",
   "session_id": "dev-001-20261104T013238Z",
-  "converter": {"name": "converter", "version": "0.1.0", "image": "ghcr.io/<user>/mini-mlops-converter:0.1.0", "ray_version": "2.59.1", ...},
+  "converter": {"name": "converter", "version": "0.2.0", "image": "ghcr.io/<user>/mini-mlops-converter:0.2.0", "ray_version": "2.59.1", ...},
   "input": {"mcap": "s3://raw/device=dev-001/.../dev-001-20261104T013238Z.mcap", "sha256": "817c7959...", ...},
   "outputs": {"imu": {"rows": 3000, "files": [{"path": "s3://derived/telemetry/imu/.../part-00000.parquet", "rows": 3000, "size_bytes": ..., "sha256": "..."}]}, ...},
   "topic_row_counts": {"/camera/front/image_compressed": 150, "/gnss": 300, "/imu": 3000}

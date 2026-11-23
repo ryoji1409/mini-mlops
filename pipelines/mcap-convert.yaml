@@ -1,12 +1,15 @@
-# MCAP 変換パイプライン（フェーズ 2）。
+# MCAP 変換パイプライン（フェーズ 2、フェーズ 3 で Kueue 経由に変更）。
 #
 #   1. discover … raw の metadata.json と derived の _manifests / _quarantine を突き合わせ、未処理のセッションを数える
 #   2. convert  … 未処理が 1 件以上あれば RayJob を作り（Ray クラスタを立てて）Ray Data で変換する。
+#                  RayJob は suspend: true で作り、Kueue のキュー（LocalQueue）で順番を待つ。
+#                  Kueue が受け入れる（枠が空く）と suspend が外れ、Ray クラスタが立ち上がる。
 #                  終わったら Ray クラスタは自動で消える（shutdownAfterJobFinishes）
 #   3. validate … DuckDB で Parquet の行数を数え、metadata.json の message_count と照合する
 #
 # 実行:  argo submit -n mlops --from workflowtemplate/mcap-convert --watch
 #        argo submit -n mlops --from workflowtemplate/mcap-convert -p force=true        # 作り直し
+#        argo submit -n mlops --from workflowtemplate/mcap-convert -p device-id=dev-011 -p priority=high
 # 登録:  docs/setup/02-pipeline.md の手順（OWNER を GitHub のユーザー名に置き換えて kubectl apply）
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -27,7 +30,7 @@ spec:
         # タグ = apps/converter/pyproject.toml の version（= マニフェストに記録される変換器のバージョン）。
         # version を上げたらここも上げる（変換器のテストで一致を確かめている）。
         # OWNER は登録するときに GitHub のユーザー名に置き換える（docs/setup/02-pipeline.md）
-        value: ghcr.io/OWNER/mini-mlops-converter:0.1.0
+        value: ghcr.io/OWNER/mini-mlops-converter:0.2.0
       - name: force
         value: "false"
         enum: ["false", "true"]
@@ -36,13 +39,28 @@ spec:
         value: "false"
         enum: ["false", "true"]
         description: true にすると、隔離されたセッションがあればワークフローを失敗にする
-  # 同時に 2 つ走ると同じセッションを取り合うので、このテンプレートのワークフローは 1 つずつ動かす
-  # （フェーズ 3 で Kueue のキューに置き換える予定）
+      - name: device-id
+        value: ""
+        description: 対象のデバイス（例 dev-011）。空なら全デバイス
+      - name: priority
+        value: low
+        enum: ["low", "high"]
+        description: Kueue の優先度（WorkloadPriorityClass）。待ち行列では high が先に受け入れられる
+      - name: queue-name
+        value: data-processing
+        description: RayJob を入れる Kueue の LocalQueue（プリエンプションの観察では preemption-test を指定する）
+  # 同じデバイスのワークフローが同時に 2 つ走ると、同じセッションを取り合う。
+  # そこで、デバイスごとのロック（mutex）で「同じデバイスは 1 つずつ」にする。
+  # 別のデバイスのワークフローは並んで動き、RayJob の順番待ちは Kueue のキューに任せる。
+  # 注意: device-id を空（全デバイス）にしたワークフローのロック名は "mcap-convert-" になり、
+  #       デバイスを指定したワークフローとは別のロックになる。全デバイスの実行と、デバイス指定の実行は同時に投げないこと
   synchronization:
     mutexes:
-      - name: mcap-convert
-  # ワークフロー全体の制限時間（1 時間）
-  activeDeadlineSeconds: 3600
+      - name: "mcap-convert-{{workflow.parameters.device-id}}"
+  # ワークフロー全体の制限時間（6 時間）= Kueue での待ち時間 + 変換の実行時間。
+  # 変換そのものの制限時間は、RayJob の activeDeadlineSeconds（30 分）で別に決めている。
+  # 待ちが長引いてもワークフローが先に失敗しないよう、こちらは長めにしてある
+  activeDeadlineSeconds: 21600
   # 完了したワークフローは 7 日後に消す（ログは s3://argo-artifacts に残っている）
   ttlStrategy:
     secondsAfterCompletion: 604800
@@ -72,7 +90,13 @@ spec:
               path: /tmp/pending
       container:
         image: "{{workflow.parameters.converter-image}}"
-        command: [converter, discover, "--force={{workflow.parameters.force}}", --output-file, /tmp/pending]
+        command:
+          - converter
+          - discover
+          - "--force={{workflow.parameters.force}}"
+          - "--device-id={{workflow.parameters.device-id}}"
+          - --output-file
+          - /tmp/pending
         envFrom:
           - configMapRef: { name: pipeline-s3 }
           - secretRef: { name: pipeline-s3-credentials }
@@ -94,8 +118,10 @@ spec:
         setOwnerReference: true
         # Ray のジョブ（converter convert）が成功したら成功
         successCondition: status.jobStatus == SUCCEEDED
-        # ジョブの失敗・期限切れ・submitter の失敗などは、すべて jobDeploymentStatus が Failed になる
-        failureCondition: status.jobDeploymentStatus == Failed
+        # ジョブの失敗・期限切れ・submitter の失敗などは、すべて jobDeploymentStatus が Failed になる。
+        # ValidationFailed は RayJob の書き方の誤り（KubeRay が受け付けない）
+        # Kueue で待っている間は Suspended（どちらにも当たらないので、ワークフローは待ち続ける）
+        failureCondition: status.jobDeploymentStatus in (Failed, ValidationFailed)
         manifest: |
           apiVersion: ray.io/v1
           kind: RayJob
@@ -104,14 +130,26 @@ spec:
             labels:
               app.kubernetes.io/part-of: mini-mlops
               app.kubernetes.io/component: converter
+              # どのデバイスの変換か（kubectl get rayjob -L mini-mlops/device-id で見える。空 = 全デバイス）
+              mini-mlops/device-id: "{{workflow.parameters.device-id}}"
+              # Kueue: この RayJob を入れるキュー（Namespace mlops の LocalQueue）。
+              # このラベルがあるジョブだけを Kueue が管理する（基盤部品などラベルの無いものには触れない）
+              kueue.x-k8s.io/queue-name: "{{workflow.parameters.queue-name}}"
+              # Kueue: 優先度（WorkloadPriorityClass の名前）。待ち行列では高いものから受け入れられる
+              kueue.x-k8s.io/priority-class: "{{workflow.parameters.priority}}"
           spec:
+            # Kueue が受け入れるまで Ray クラスタを作らない（Kueue が受け入れると false に書き換える）。
+            # Kueue の webhook も同じことをするが、意図が分かるように明示しておく
+            suspend: true
             # Ray クラスタの head 上で実行されるコマンド（変換の本体）。未処理の判定は中でもう一度行う
-            entrypoint: converter convert --force={{workflow.parameters.force}}
+            entrypoint: converter convert --force={{workflow.parameters.force}} --device-id={{workflow.parameters.device-id}}
             # ジョブが終わったら Ray クラスタ（head / worker の Pod）を消す。
             # 120 秒待つのは、終了直後の Ray Dashboard やログを確認できるようにするため
             shutdownAfterJobFinishes: true
             ttlSecondsAfterFinished: 120
-            # Ray クラスタの起動からジョブ終了までの制限時間（30 分）
+            # 変換の実行時間の上限（30 分）。KubeRay は Kueue に受け入れられて suspend が外れた時点で
+            # 開始時刻（status.startTime）を付け直すので、キューで待っていた時間は含まれない
+            # （KubeRay v1.7.2 の rayjob_controller.go の initRayJobStatusIfNeed で確認）
             activeDeadlineSeconds: 1800
             # 失敗しても RayJob としては再試行しない（再実行はワークフローごとやり直す）
             backoffLimit: 0
@@ -203,6 +241,7 @@ spec:
           - converter
           - validate
           - "--fail-on-quarantine={{workflow.parameters.fail-on-quarantine}}"
+          - "--device-id={{workflow.parameters.device-id}}"
           - --summary-file
           - /tmp/summary.json
         envFrom:

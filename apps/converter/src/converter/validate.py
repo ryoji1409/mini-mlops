@@ -66,13 +66,15 @@ def connect(s3: S3Settings, use_s3: bool = True) -> duckdb.DuckDBPyConnection:
     return con
 
 
-def count_rows(con: duckdb.DuckDBPyConnection, derived_uri: str, prefix: str) -> dict[str, int]:
+def count_rows(con: duckdb.DuckDBPyConnection, derived_uri: str, prefix: str, device_id: str | None = None) -> dict[str, int]:
     """あるデータセットの Parquet を全部読み、session_id ごとの行数を返す。
 
     hive_partitioning は使わず、ファイルの中の session_id 列で数える
     （パスの session_id= とファイル内の列が同じ名前なので、二重に扱わないようにする）。
+    device_id を渡すと、パスの device=<id> の下だけを読む（他のデバイスのファイルは数えない）。
     """
-    pattern = f"{derived_uri}/{prefix}/*/*/*/*.parquet"
+    device_dir = f"device={device_id}" if device_id else "*"
+    pattern = f"{derived_uri}/{prefix}/{device_dir}/*/*/*.parquet"
     query = f"SELECT session_id, count(*) FROM read_parquet({_sql_str(pattern)}, hive_partitioning = false) GROUP BY session_id"
     try:
         return {session_id: int(n) for session_id, n in con.execute(query).fetchall()}
@@ -102,17 +104,37 @@ def _check_session(ref: SessionRef, manifest: dict[str, Any] | None, quarantine:
     return SessionCheck(ref.session_id, "MISSING", "マニフェストも隔離記録もありません（未変換）")
 
 
-def run_validate(settings: Settings, fail_on_quarantine: bool = False, summary_file: Path | None = None) -> int:
-    """validate コマンドの本体。戻り値は終了コード（0 = 成功）。"""
+def _count_all(con: duckdb.DuckDBPyConnection, derived_uri: str, prefix: str, device_ids: set[str] | None) -> dict[str, int]:
+    """count_rows を、指定されたデバイスごと（指定なしなら全体で 1 回）に呼んでまとめる。"""
+    if not device_ids:
+        return count_rows(con, derived_uri, prefix)
+    merged: dict[str, int] = {}
+    for device_id in sorted(device_ids):
+        merged.update(count_rows(con, derived_uri, prefix, device_id))
+    return merged
+
+
+def run_validate(
+    settings: Settings,
+    fail_on_quarantine: bool = False,
+    summary_file: Path | None = None,
+    device_ids: set[str] | None = None,
+) -> int:
+    """validate コマンドの本体。戻り値は終了コード（0 = 成功）。
+
+    device_ids を渡すと、そのデバイスのセッションと Parquet だけを検証する。
+    （デバイスごとのワークフローが並行して動くとき、他のデバイスの変換途中のファイルを
+    「マニフェストの無い残骸」と誤判定しないようにするため）
+    """
     raw = open_location(settings.raw_uri, settings.s3)
     derived = open_location(settings.derived_uri, settings.s3)
-    refs, invalid = list_raw_sessions(raw)
+    refs, invalid = list_raw_sessions(raw, device_ids)
     con = connect(settings.s3, use_s3=settings.derived_uri.startswith("s3://"))
     counts: dict[str, dict[str, int]] = {}
     unreadable: list[str] = []
     for spec in DATASETS.values():
         try:
-            counts[spec.name] = count_rows(con, settings.derived_uri, spec.prefix)
+            counts[spec.name] = _count_all(con, settings.derived_uri, spec.prefix, device_ids)
         except duckdb.Error as e:
             # Parquet として読めないファイルが混ざっている（途中で落ちた書きかけなど）
             log.error("  UNREADABLE  %s: %s", spec.prefix, str(e).splitlines()[0])

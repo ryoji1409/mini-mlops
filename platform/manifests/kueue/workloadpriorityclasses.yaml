@@ -1,0 +1,21 @@
+# Kueue の優先度（WorkloadPriorityClass）。ジョブに kueue.x-k8s.io/priority-class: high / low を付けて使う。
+# 待ち行列では値の大きいものから受け入れられる（同じ値なら古い順）。
+# Pod の PriorityClass（kube-scheduler の優先度）とは別物で、Pod の優先度は変わらない。
+# ラベルの無いジョブの優先度は 0（low より後ろ）。
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: high
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+value: 1000
+description: 急ぎのジョブ（待ち行列で先に受け入れる）
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: low
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+value: 100
+description: 通常のジョブ（mcap-convert の既定）

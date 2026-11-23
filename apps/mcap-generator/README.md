@@ -64,12 +64,15 @@ output/
 cd apps/mcap-generator
 uv sync                                   # 依存関係をインストール（uv.lock どおりの版）
 uv run mcap-generate --devices 2 --sessions-per-device 3 --out ../../output --seed 42
+# フェーズ 3 の並行実行の確認用: dev-011〜dev-014 を 4 台 × 5 セッション追加（既存の dev-001 / dev-002 とは重ならない）
+uv run mcap-generate --first-device 11 --devices 4 --sessions-per-device 5 --out ../../output --seed 7
 ```
 
 | 引数 | 既定値 | 意味 |
 |---|---|---|
 | `--devices` | 2 | デバイス数 |
 | `--sessions-per-device` | 3 | 1 台あたりのセッション数 |
+| `--first-device` | 1 | デバイス番号の始まり（1 → dev-001）。既存のデータと ID が重ならないデータを追加で作るときにずらす |
 | `--out` | `./output` | 出力先 |
 | `--seed` | 42 | 乱数シード |
 | `--min-duration` / `--max-duration` | 30 / 60 | 記録時間 [秒] の範囲 |
@@ -78,7 +81,7 @@ uv run mcap-generate --devices 2 --sessions-per-device 3 --out ../../output --se
 ## 動作確認コマンド
 
 ```bash
-uv run pytest -q                                    # 期待: 6 passed
+uv run pytest -q                                    # 期待: 7 passed
 uv run mcap-generate --out ../../output --seed 42   # 期待: [1/6]〜[6/6] が表示される
 mcap info ../../output/device=dev-001/date=*/session_id=*/*.mcap | head -20
 ```

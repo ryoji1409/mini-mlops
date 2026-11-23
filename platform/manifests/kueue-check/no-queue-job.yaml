@@ -1,0 +1,30 @@
+# 確認用: queue-name ラベルの無い Job（docs/setup/03-kueue.md 手順 9「干渉しないこと」）。
+# Kueue が管理する Namespace（training）に置いても、ラベルが無ければ Kueue は触らない
+# （manageJobsWithoutQueueName: false）。すぐに動き、Workload も作られないことを確かめる。
+#
+# 作る:  kubectl create -f platform/manifests/kueue-check/no-queue-job.yaml
+# 消す:  kubectl -n training delete job no-queue-job（終わって 10 分後に自動でも消える）
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: no-queue-job
+  namespace: training
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: mini-mlops
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: echo
+          image: busybox:1.37.0
+          command: ["sh", "-c", "echo 'Kueue を通らずに動きました'"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 32Mi }

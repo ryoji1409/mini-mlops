@@ -1,0 +1,84 @@
+# Kueue（chart 0.20.7 / image v0.20.7）の values。フェーズ 3 で導入。
+#
+# Kueue はジョブ（RayJob・Job・TrainJob）を「キュー」に並べ、クォータ（CPU / メモリの枠）が空いたときに
+# まとめて受け入れる（suspend を外す）。キューの定義は platform/manifests/kueue/。
+#
+# 方針:
+#   - Kueue が触るのは、kueue.x-k8s.io/queue-name ラベルの付いたジョブだけ（manageJobsWithoutQueueName: false）。
+#   - さらに、Kueue の webhook が見る Namespace を mlops と training に限る（managedJobsNamespaceSelector）。
+#     チャートの既定では、kube-system 以外のほぼ全 Namespace の Job 作成が Kueue の webhook（failurePolicy: Fail）を通る。
+#     その場合、Kueue の Pod が落ちている間は longhorn-system や argo などでも Job を作れなくなる。
+#     基盤部品に一切影響させないため、webhook の対象そのものを絞る。
+#   - 使う連携（integrations）は 3 つだけ。Pod / Deployment / StatefulSet などは使わないので外す
+#     （外すと、それらの webhook はチャートが作らない）。
+#
+# リソース予算: README の「方針」の「Kueue 0.5GB」以内（limit 512Mi）。
+
+controllerManager:
+  manager:
+    image:
+      # チャートの既定値と同じだが、明示して固定する
+      repository: registry.k8s.io/kueue/kueue
+      tag: v0.20.7
+      pullPolicy: IfNotPresent
+    # 既定は requests 500m / 512Mi。このクラスタは CPU の空きが少ないので requests を下げる
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+
+# Kueue 本体の設定ファイル（controller_manager_config.yaml）。
+# チャートの既定値をそのまま写し、「ここで変更」の部分だけ変えている（v0.20.7 では文字列でまるごと渡す形式）。
+managerConfig:
+  controllerManagerConfigYaml: |-
+    apiVersion: config.kueue.x-k8s.io/v1beta2
+    kind: Configuration
+    health:
+      healthProbeBindAddress: :8081
+    metrics:
+      bindAddress: :8443
+    webhook:
+      port: 9443
+    leaderElection:
+      leaderElect: true
+      resourceName: c1f6bfd2.kueue.x-k8s.io
+    controller:
+      groupKindConcurrency:
+        Job.batch: 5
+        Pod: 5
+        Workload.kueue.x-k8s.io: 10
+        LocalQueue.kueue.x-k8s.io: 5
+        Cohort.kueue.x-k8s.io: 1
+        ClusterQueue.kueue.x-k8s.io: 5
+        ResourceFlavor.kueue.x-k8s.io: 1
+    clientConnection:
+      qps: 300
+      burst: 500
+    # ここで変更: queue-name ラベルの無いジョブは管理しない（既定も false だが明示する）
+    manageJobsWithoutQueueName: false
+    # ここで変更: Kueue が管理する（webhook を通す）Namespace を mlops（変換）と training（学習）だけにする
+    managedJobsNamespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [mlops, training]
+    # ここで変更: 全部か無しか（all-or-nothing）の保険。
+    # 受け入れたあと 10 分以内に全 Pod が揃わなければ（RayJob なら Ray クラスタが Ready にならなければ）、
+    # いったん suspend に戻してクォータを返し、待ち行列に並び直させる。
+    # クォータは実際のノードの空きより小さくしてあるので普段は起きないが、ノードの不調などで Pod が載らないときに
+    # 「枠だけ取って動かないジョブ」が他のジョブを止め続けないようにする。
+    waitForPodsReady:
+      timeout: 10m
+      # true にすると、1 つの Workload が揃うまで他の受け入れを全部止める。並行実行を見たいので false
+      blockAdmission: false
+      requeuingStrategy:
+        # 並び直すときの順番は「追い出された時刻」で決める（既定）
+        timestamp: Eviction
+        # 3 回やり直しても揃わなければ諦める（Workload が無効になり、RayJob は suspend のまま残る）
+        backoffLimitCount: 3
+        backoffBaseSeconds: 60
+    # ここで変更: 使う連携だけにする
+    integrations:
+      frameworks:
+        - "batch/job"                       # 確認用の Job（training の枠を埋めるダミーなど）
+        - "ray.io/rayjob"                   # 変換（mcap-convert の RayJob）
+        - "trainer.kubeflow.org/trainjob"   # フェーズ 4 の学習（Kubeflow Trainer v2）。CRD が入るまでは Kueue が待つだけ

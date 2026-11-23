@@ -7,29 +7,41 @@
 
 | テンプレート | 内容 | フェーズ |
 |---|---|---|
-| `mcap-convert` | raw の MCAP を Ray Data で derived に変換し、DuckDB で検証する | 2 |
+| `mcap-convert` | raw の MCAP を Ray Data で derived に変換し、DuckDB で検証する。RayJob は Kueue のキュー経由で動く | 2（3 で Kueue 経由に） |
 
 ### mcap-convert の流れ
 
 ```
 discover ──(未処理 > 0)──▶ convert（RayJob を作って待つ）──▶ validate
    │                          │                                  │
-   │ converter discover       │ Ray head 1 + worker 2 を起動      │ converter validate
-   │ 未処理の件数を出力        │ entrypoint: converter convert     │ DuckDB で行数照合
+   │ converter discover       │ suspend: true で作る → Kueue が    │ converter validate
+   │ 未処理の件数を出力        │ 受け入れたら Ray head 1 + worker 2 │ DuckDB で行数照合
+   │                          │ entrypoint: converter convert     │
    └─(未処理 = 0)── convert をスキップ ───────────────────────────▶┘
 ```
+
+3 つのステップとも `--device-id` で対象のデバイスを絞れます（空なら全デバイス）。
 
 | パラメータ | 既定 | 意味 |
 |---|---|---|
 | `converter-image` | `ghcr.io/OWNER/mini-mlops-converter:<version>`（登録時に OWNER を置き換える。タグは pyproject.toml の version と揃える） | 変換器のイメージ |
 | `force` | `false` | `true` で変換済み・隔離済みのセッションも作り直す |
 | `fail-on-quarantine` | `false` | `true` で隔離があればワークフローを失敗にする |
+| `device-id` | 空（全デバイス） | 対象のデバイス（例 `dev-011`）。デバイスごとに別のワークフローを並行して投げられる |
+| `priority` | `low` | Kueue の優先度（`low` / `high`）。待ち行列では high が先に受け入れられる |
+| `queue-name` | `data-processing` | RayJob を入れる Kueue の LocalQueue（プリエンプションの観察では `preemption-test`） |
 
-- **RayJob の成否**: `successCondition: status.jobStatus == SUCCEEDED`、`failureCondition: status.jobDeploymentStatus == Failed`
+- **RayJob の成否**: `successCondition: status.jobStatus == SUCCEEDED`、`failureCondition: status.jobDeploymentStatus in (Failed, ValidationFailed)`
   （ジョブの失敗・期限切れ・submitter の失敗はどれも `jobDeploymentStatus` が `Failed` になる）。
+  Kueue で待っている間は `Suspended` で、どちらにも当たらないので、ワークフローは失敗せずに待ち続ける。
+- **Kueue**: RayJob に `kueue.x-k8s.io/queue-name`（既定 `data-processing`）と `kueue.x-k8s.io/priority-class`（既定 `low`）を付け、
+  `suspend: true` で作る。Kueue がクォータの空きを確かめて受け入れると suspend が外れ、Ray クラスタが立ち上がる。
+  枠が足りない間は Ray の Pod を 1 つも作らない（全部か無しか）。キューの設計は docs/architecture.md の「フェーズ 3」。
+- **制限時間**: ワークフロー全体は 6 時間（Kueue での待ち + 実行）、RayJob は 30 分（実行だけ。KubeRay は受け入れ時に開始時刻を付け直す）。
 - **後片付け**: `shutdownAfterJobFinishes: true` + `ttlSecondsAfterFinished: 120` で、ジョブ終了の 2 分後に Ray クラスタが消える。
   RayJob 自体は ownerReference でワークフローに紐づき、ワークフローが消える（7 日後）と一緒に消える。
-- **同時実行**: `synchronization.mutexes` で 1 つずつ実行（同じセッションの取り合いを防ぐ。フェーズ 3 で Kueue に置き換える予定）。
+- **同時実行**: mutex 名を `mcap-convert-<device-id>` にして、**同じデバイスのワークフローは 1 つずつ**（同じセッションの取り合いを防ぐ）。
+  別のデバイスは並んで動き、RayJob の順番は Kueue が決める。device-id を空にした全デバイスの実行は、デバイス指定の実行と同時に投げない。
 - **ログ**: 各ステップのログは `s3://argo-artifacts/mlops/<ワークフロー名>/<Pod 名>/` に保存（Pod が消えても UI から見られる）。
   RayJob のジョブログは submitter Pod（`kubectl -n mlops logs job/<RayJob 名>`）で見る。
 
@@ -40,12 +52,14 @@ discover ──(未処理 > 0)──▶ convert（RayJob を作って待つ）�
 | Ray head | 1 CPU / 3Gi | `num-cpus=0`（タスクは載せない）、object store 200MB。Ray 2.59 の head は Dashboard の子プロセスなどで約 2.3GB 使う |
 | Ray worker × 2 | 1 CPU / 1.25Gi | object store 250MB。変換時の実測ピークは約 0.6GB |
 | submitter Pod | 0.5 CPU / 512Mi | `ray job submit` してログを追うだけ |
-| **Ray 合計** | **6Gi** | 予算 6GB |
+| **Ray 合計** | **6Gi** | 予算 6GB（Kueue は requests の合計 1.6 CPU / 4.75Gi で枠を数える） |
 | discover / validate | 1 CPU / 512Mi | 短時間だけ動く。init / wait コンテナは別に 256Mi（Argo の executor 設定） |
 
 ## 実行手順
 
-登録・実行・Ray Dashboard・隔離の確認の手順は [docs/setup/02-pipeline.md](../docs/setup/02-pipeline.md)（手順 7〜10）にあります。
+登録・実行・Ray Dashboard・隔離の確認の手順は [docs/setup/02-pipeline.md](../docs/setup/02-pipeline.md)（手順 7〜10）、
+Kueue でのキューイング・優先度・貸し借りの確認は [docs/setup/03-kueue.md](../docs/setup/03-kueue.md) にあります。
+**フェーズ 3 以降のテンプレートは Kueue が前提**です（Kueue が無いと RayJob が suspend のまま動かない）。
 よく使うコマンドだけ抜き出すと:
 
 ```bash
@@ -55,6 +69,7 @@ sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" pipelines/mcap-convert.yaml | kube
 # 実行して完了まで見守る
 argo submit -n mlops --from workflowtemplate/mcap-convert --watch
 argo submit -n mlops --from workflowtemplate/mcap-convert -p force=true --watch   # 作り直し
+argo submit -n mlops --from workflowtemplate/mcap-convert -p device-id=dev-011 -p priority=high   # デバイスを絞り、優先度 high で
 ```
 
 ## 動作確認コマンド
@@ -63,6 +78,8 @@ argo submit -n mlops --from workflowtemplate/mcap-convert -p force=true --watch 
 argo get -n mlops @latest
 argo logs -n mlops @latest | grep -E "変換対象|OK |QUARANTINED|MISMATCH|MISSING|検証"
 kubectl -n mlops get workflow,rayjob,raycluster,pod
+kubectl -n mlops get workloads                      # Kueue の Workload（RayJob 1 つにつき 1 つ。ADMITTED が True なら受け入れ済み）
+kubectl get clusterqueue -o wide                    # 待っている数（PENDING）と受け入れ済みの数（ADMITTED）
 kubectl -n mlops logs job/<RayJob 名> -f            # ジョブのログ（RayJob 名は argo get の convert の出力 rayjob-name）
 ```
 
@@ -83,7 +100,8 @@ OK          dev-001-20261104T013238Z         imu=3000, gnss=300, frames_front=15
 |---|---|
 | Pod が `ErrImagePull` / `ImagePullBackOff`、`describe` に `401 Unauthorized` | GHCR の pull 用トークンが無い / 権限不足。`GHCR_PULL_TOKEN`（read:packages）を確認して Secret `ghcr-pull` を作り直す（[02-pipeline.md](../docs/setup/02-pipeline.md) 手順 4） |
 | `ImagePullBackOff` で `no match for platform in manifest` | イメージの CPU アーキテクチャがノードと違う。`.env` の `CONVERTER_PLATFORM` をノードに合わせて（例: `linux/arm64`）ビルドし直す |
-| ワークフローが `Pending` のまま、`waiting for lock` | 別の mcap-convert が動いている（mutex）。`argo list -n mlops` で確認 |
+| ワークフローが `Pending` のまま、`waiting for lock` | 同じデバイスの mcap-convert が動いている（デバイスごとの mutex）。`argo list -n mlops` で確認 |
+| convert が終わらず、RayJob が `Suspended` のまま | Kueue で順番待ち。`kubectl -n mlops describe workloads` の Message で理由を確認（[03-kueue.md](../docs/setup/03-kueue.md) のよくあるエラー）。Kueue が入っていない場合は永久に待つ |
 | discover が `AccessDenied` / `InvalidAccessKeyId` | Secret `pipeline-s3-credentials` のキーが SeaweedFS に登録されていない。[01-storage.md](../docs/setup/01-storage.md) 手順 2 をやり直して SeaweedFS を再起動 |
 | convert が `forbidden: User "system:serviceaccount:mlops:mcap-pipeline" cannot create resource "rayjobs"` | Role が無い。`kubectl apply -k platform/manifests/pipelines` |
 | convert が `cannot set blockOwnerDeletion if an ownerReference refers to a resource you can't set finalizers on` | API サーバで OwnerReferencesPermissionEnforcement が有効な環境。Role に `argoproj.io` の `workflows/finalizers` への `update` を足す |
