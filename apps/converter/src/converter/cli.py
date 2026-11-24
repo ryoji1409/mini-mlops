@@ -98,10 +98,18 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from converter.discover import UnknownDeviceError
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
     args = _parser().parse_args(argv)
     handler = {"discover": _cmd_discover, "convert": _cmd_convert, "validate": _cmd_validate}[args.command]
-    return handler(args)
+    try:
+        return handler(args)
+    except UnknownDeviceError as e:
+        # 存在しないデバイスの指定は、スタックトレースではなく 1 行のエラーにして失敗（終了コード 1）にする。
+        # Argo の discover ステップが失敗するので、ワークフローも失敗になり、間違いに気づける
+        logging.getLogger("converter").error("%s", e)
+        return 1
 
 
 if __name__ == "__main__":

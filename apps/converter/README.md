@@ -93,8 +93,8 @@ uv run converter discover --device-id dev-011   # デバイスで絞る（discov
 GHCR への push の手順は [docs/setup/02-pipeline.md](../../docs/setup/02-pipeline.md) 手順 6。ローカルでビルドだけするなら:
 
 ```bash
-docker buildx build --build-arg CONVERTER_VERSION=0.2.0 --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
-  --tag mini-mlops-converter:0.2.0-local --load apps/converter       # リポジトリのルートで
+docker buildx build --build-arg CONVERTER_VERSION=0.2.1 --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+  --tag mini-mlops-converter:0.2.1-local --load apps/converter       # リポジトリのルートで
 ```
 
 - タグ = `pyproject.toml` の version。コードを変えたら version と `pipelines/mcap-convert.yaml` のタグを上げる（テストで一致を確かめている）。
@@ -109,7 +109,7 @@ docker buildx build --build-arg CONVERTER_VERSION=0.2.0 --build-arg GIT_COMMIT=$
 cd apps/converter && uv run pytest -q
 ```
 
-期待される出力: `9 passed`
+期待される出力: `10 passed`
 
 ```bash
 # クラスタで変換したあと（port-forward と .env が必要）
@@ -124,7 +124,7 @@ aws s3 cp s3://derived/_manifests/<session_id>.json - | python3 -m json.tool | h
 {
   "status": "converted",
   "session_id": "dev-001-20261104T013238Z",
-  "converter": {"name": "converter", "version": "0.2.0", "image": "ghcr.io/<user>/mini-mlops-converter:0.2.0", "ray_version": "2.59.1", ...},
+  "converter": {"name": "converter", "version": "0.2.1", "image": "ghcr.io/<user>/mini-mlops-converter:0.2.1", "ray_version": "2.59.1", ...},
   "input": {"mcap": "s3://raw/device=dev-001/.../dev-001-20261104T013238Z.mcap", "sha256": "817c7959...", ...},
   "outputs": {"imu": {"rows": 3000, "files": [{"path": "s3://derived/telemetry/imu/.../part-00000.parquet", "rows": 3000, "size_bytes": ..., "sha256": "..."}]}, ...},
   "topic_row_counts": {"/camera/front/image_compressed": 150, "/gnss": 300, "/imu": 3000}
@@ -142,3 +142,4 @@ aws s3 cp s3://derived/_manifests/<session_id>.json - | python3 -m json.tool | h
 | `事前チェック NG: sha256 が metadata.json と違います` | raw の MCAP と metadata.json の組み合わせが違う / 転送中に壊れた。ホストで `scripts/validate-mcap.sh` からやり直す |
 | `converter validate` が `ORPHAN` を出す | マニフェストの無い Parquet が残っている（変換が途中で落ちた、変換器の版を上げたあと失敗した等）。`converter convert` を再実行すると片付く |
 | `duckdb.IOException: ... HTTP 403` | DuckDB の S3 キーが違う。Pod なら Secret `pipeline-s3-credentials`、ホストなら `.env` を確認 |
+| `raw にセッションが 1 件も無いデバイスが指定されました: …`（終了コード 1） | `--device-id` に raw に無いデバイスを指定した（打ち間違いなど）。`aws s3 ls s3://raw/` で実在するデバイスを確認する。黙って「対象 0 件で成功」にしないよう、0.2.1 からエラーにしている |

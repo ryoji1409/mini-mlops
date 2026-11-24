@@ -25,7 +25,7 @@ from typing import Any
 import duckdb
 
 from converter.config import S3Settings, Settings
-from converter.discover import list_raw_sessions
+from converter.discover import check_devices_exist, list_raw_sessions
 from converter.layout import DATASETS, SessionRef, manifest_key, quarantine_key
 from converter.records import matches
 from converter.storage import open_location, read_json
@@ -129,6 +129,7 @@ def run_validate(
     raw = open_location(settings.raw_uri, settings.s3)
     derived = open_location(settings.derived_uri, settings.s3)
     refs, invalid = list_raw_sessions(raw, device_ids)
+    check_devices_exist(device_ids, refs, invalid)
     con = connect(settings.s3, use_s3=settings.derived_uri.startswith("s3://"))
     counts: dict[str, dict[str, int]] = {}
     unreadable: list[str] = []

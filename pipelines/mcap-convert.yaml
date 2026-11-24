@@ -30,7 +30,7 @@ spec:
         # タグ = apps/converter/pyproject.toml の version（= マニフェストに記録される変換器のバージョン）。
         # version を上げたらここも上げる（変換器のテストで一致を確かめている）。
         # OWNER は登録するときに GitHub のユーザー名に置き換える（docs/setup/02-pipeline.md）
-        value: ghcr.io/OWNER/mini-mlops-converter:0.2.0
+        value: ghcr.io/OWNER/mini-mlops-converter:0.2.1
       - name: force
         value: "false"
         enum: ["false", "true"]

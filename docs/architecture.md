@@ -58,7 +58,7 @@ s3://raw/device=<device_id>/date=<YYYY-MM-DD(UTC)>/session_id=<session_id>/metad
 
 ```
 ┌──────── ホスト ────────┐        ┌──────────── GHCR（非公開） ────────────┐
-│ docker buildx build     │ push   │ ghcr.io/<user>/mini-mlops-converter:0.2.0│
+│ docker buildx build     │ push   │ ghcr.io/<user>/mini-mlops-converter:0.2.1│
 │   --push ───────────────┼───────▶│ （タグ = 変換器のバージョン）            │
 │  argo submit            │        └─────────────────────┬───────────────────┘
 └──────────┬──────────────┘                              │ pull（Secret ghcr-pull）

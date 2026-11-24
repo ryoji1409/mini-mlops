@@ -184,6 +184,27 @@ def test_device_idで対象を絞れる(lake: tuple[Path, Path], monkeypatch, tm
     assert run_validate(s) == 1
 
 
+def test_存在しないデバイスを指定したら失敗する(lake: tuple[Path, Path], monkeypatch, tmp_path: Path) -> None:
+    """デバイス ID の打ち間違いで「対象 0 件のまま成功」にならないこと。"""
+    import pytest
+
+    from converter.discover import UnknownDeviceError
+
+    raw, derived = lake
+    monkeypatch.setenv("RAW_URI", str(raw))
+    monkeypatch.setenv("DERIVED_URI", str(derived))
+    out = tmp_path / "pending"
+    # CLI は 1 行のエラーにして終了コード 1（Argo のステップが失敗する）
+    assert main(["discover", "--device-id", "dev-999", "--output-file", str(out)]) == 1
+    assert not out.exists()  # 件数は書かない（後続のステップに進ませない）
+    assert main(["validate", "--device-id", "dev-999"]) == 1
+    # 実在するデバイスと一緒に指定しても、無いものがあれば失敗
+    assert main(["discover", "--device-id", "dev-001", "--device-id", "dev-999"]) == 1
+    # convert（RayJob の中）も同じ判定で止まる
+    with pytest.raises(UnknownDeviceError):
+        run_convert(_settings(raw, derived), device_ids={"dev-999"})
+
+
 def test_count_mismatch_is_not_written(lake: tuple[Path, Path]) -> None:
     """行が重複したメッセージを渡されたら、何も書かずに CountMismatchError（隔離もしない）。"""
     import pyarrow as pa

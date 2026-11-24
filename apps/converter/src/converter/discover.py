@@ -18,6 +18,10 @@ from converter.storage import Location, list_files, read_bytes
 log = logging.getLogger(__name__)
 
 
+class UnknownDeviceError(ValueError):
+    """指定されたデバイスのセッションが raw に 1 件も無い（デバイス ID の打ち間違いなど）。"""
+
+
 @dataclass(frozen=True)
 class DiscoverResult:
     pending: list[SessionRef]  # これから変換するセッション
@@ -53,6 +57,23 @@ def list_raw_sessions(raw: Location, device_ids: set[str] | None = None) -> tupl
     return sorted(refs, key=lambda r: r.session_id), invalid
 
 
+def check_devices_exist(device_ids: set[str] | None, refs: list[SessionRef], invalid: list[str]) -> None:
+    """指定したデバイスが raw に存在するか確かめる。1 件もセッションが無いデバイスがあれば UnknownDeviceError。
+
+    デバイス ID を打ち間違えると、対象 0 件のまま「何もせずに成功」してしまう（フェーズ 3 の確認で実際に起きた）。
+    指定したのに見つからないのは間違いの可能性が高いので、黙って成功させずにエラーにする。
+    metadata.json が壊れていて読めないセッションも「そのデバイスはある」とみなす（それは別のエラーとして報告される）。
+    """
+    if not device_ids:
+        return  # 指定なし = 全デバイス。確かめるものが無い
+    found = {r.device_id for r in refs}
+    # 読めなかった metadata.json のキー（device=<id>/date=…/…）からもデバイス ID を拾う
+    found |= {key.split("/", 1)[0].removeprefix("device=") for key in invalid}
+    missing = sorted(device_ids - found)
+    if missing:
+        raise UnknownDeviceError(f"raw にセッションが 1 件も無いデバイスが指定されました: {', '.join(missing)}（デバイス ID を確認してください）")
+
+
 def find_pending(
     raw: Location,
     derived: Location,
@@ -70,6 +91,7 @@ def find_pending(
                      （フェーズ 3: デバイスごとに別々のワークフロー / RayJob で並行に変換するため）
     """
     refs, invalid = list_raw_sessions(raw, device_ids)
+    check_devices_exist(device_ids, refs, invalid)
     if session_ids:
         refs = [r for r in refs if r.session_id in session_ids]
     states: dict[str, str] = {}

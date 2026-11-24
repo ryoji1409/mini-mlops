@@ -22,13 +22,13 @@
 set -a; source .env; set +a
 ```
 
-## 1. 変換器のイメージ（0.2.0）をビルドして push する
+## 1. 変換器のイメージ（0.2.1）をビルドして push する
 
-フェーズ 3 で変換器に `--device-id`（デバイスで対象を絞る）を足したので、バージョンを 0.2.0 に上げています。
-[02-pipeline.md](02-pipeline.md) 手順 6 と同じコマンドで、新しいタグのイメージを作ります（VERSION は pyproject.toml から読むので 0.2.0 になる）。
+フェーズ 3 で変換器に `--device-id`（デバイスで対象を絞る。raw に無いデバイスを指定したらエラー）を足したので、バージョンを 0.2.1 に上げています。
+[02-pipeline.md](02-pipeline.md) 手順 6 と同じコマンドで、新しいタグのイメージを作ります（VERSION は pyproject.toml から読むので 0.2.1 になる）。
 
 ```bash
-VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/converter/pyproject.toml); echo "$VERSION"    # 0.2.0
+VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/converter/pyproject.toml); echo "$VERSION"    # 0.2.1
 IMAGE="ghcr.io/${GHCR_USER}/mini-mlops-converter:${VERSION}"
 echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 docker buildx build \
@@ -38,7 +38,7 @@ docker buildx build \
   --tag "$IMAGE" --push apps/converter
 ```
 
-**変換器の版が変わったので、0.1.0 で変換済みのセッション（dev-001 / dev-002）は次に全デバイスを対象に実行したとき作り直されます**
+**変換器の版が変わったので、前の版で変換済みのセッションは、次にそのデバイスを対象に実行したとき作り直されます**
 （マニフェストに記録した版と違う = 変換対象、というフェーズ 2 からの決まり）。
 
 ## 2. Kueue を入れる
@@ -407,6 +407,7 @@ kubectl delete -k platform/manifests/kueue-preemption-test
 | 受け入れられたのに Ray の worker が `Pending`、`describe pod` に `Insufficient cpu`。終わったはずの RayJob の Ray の Pod が残っている | Kueue はジョブ終了と同時に枠を返すが、Ray クラスタが残っているとノードの CPU が空かない。RayJob の `ttlSecondsAfterFinished` が 0 になっているか確認（以前の 120 では実際に起きた）。古いテンプレートで投げた分は、残った Ray クラスタが消えれば自動で載る |
 | 受け入れられたのに Ray の Pod が `Pending`（ノードの空きが足りない） | クォータより実際のノードの空きが小さい（他の Pod が増えた等）。10 分で Kueue が追い出して並び直させる（waitForPodsReady）。`kubectl describe node` で空きを確認し、クォータ（`platform/manifests/kueue/clusterqueue-*.yaml`）を下げる |
 | Workload が `Evicted`（理由 `PodsReadyTimeout`）を繰り返し、最後に `Active: False` | 受け入れ後 10 分以内に Ray クラスタが Ready にならなかった（イメージの取得に時間がかかった等）を 3 回繰り返した。原因を直してから、ワークフローを止めて投げ直す |
+| discover が失敗、ログに `raw にセッションが 1 件も無いデバイスが指定されました: dev-0xx` | `device-id` の打ち間違い。`aws s3 ls s3://raw/` で実在するデバイスを確認する（以前は対象 0 件のまま成功していた） |
 | ワークフローが `Pending`、`waiting for lock` | 同じデバイスのワークフローが動いている（デバイスごとに 1 つずつ）。`argo list -n mlops` で確認 |
 | ワークフローが 6 時間で `Failed`（`Step exceeded its deadline`） | Kueue での待ちが長すぎた。`kubectl get clusterqueue -o wide` で詰まっていないか、`describe workloads` の Message を確認 |
 | `kubectl` のたびに `couldn't get resource list for visibility.kueue.x-k8s.io/v1beta2` の警告 / Namespace の削除が終わらない | Kueue の Pod が落ちていて、Kueue の visibility API（APIService）が応答しない。Kueue を復旧させる（`kubectl -n kueue-system get pod`） |
