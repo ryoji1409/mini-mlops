@@ -1,0 +1,28 @@
+# Kubeflow Trainer v2（chart 2.4.0 / image v2.4.0）の values。フェーズ 4 で導入。
+#
+# TrainJob（学習ジョブ）を受け取り、ClusterTrainingRuntime（学習の雛形）と組み合わせて JobSet → Job → Pod を作る。
+# JobSet（v0.13.0）はこのチャートに同梱されているものを一緒に入れる（jobset.install: true）。
+#
+# リソース予算: README の「方針」の「Kubeflow Trainer + 学習ジョブ 4GB」。
+#   コントローラ 2 つ（Trainer・JobSet）で limit 256Mi ずつ、残り約 3.5Gi を学習ワーカー 2 台に使う。
+
+# 同梱の学習用ランタイム（torch-distributed など）は入れない。
+# どれも CUDA 前提のイメージ（pytorch/pytorch:…-cuda…）なので、CPU 用のランタイムを自分で定義する
+# （platform/manifests/training/clustertrainingruntime-torch-cpu.yaml）
+runtimes:
+  defaultEnabled: false
+
+manager:
+  # チャートの既定は resources 無し。すべての Pod に requests / limits を付ける方針なので指定する
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+jobset:
+  install: true
+  fullnameOverride: jobset
+  controller:
+    # チャートの既定（requests 500m / 128Mi、limits 2 CPU / 4Gi）は、この小さなクラスタには大きすぎる
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 256Mi }

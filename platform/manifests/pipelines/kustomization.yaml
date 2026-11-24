@@ -10,3 +10,4 @@ resources:
   - role.yaml
   - rolebinding.yaml
   - configmap-s3.yaml
+  - train-pipeline-rbac.yaml

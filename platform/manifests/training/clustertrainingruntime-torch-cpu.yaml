@@ -1,0 +1,57 @@
+# CPU で PyTorch の分散学習（DDP、通信は gloo）をするための学習の雛形。
+# TrainJob は runtimeRef: torch-cpu でこれを指定し、イメージ・コマンド・ノード数・リソースだけを上書きする。
+#
+# Kubeflow Trainer は TrainJob を受け取ると、この雛形から JobSet を作る:
+#   JobSet <TrainJob 名> → Job <TrainJob 名>-node-0（Pod をノード数ぶん）
+# torch のポリシー（mlPolicy.torch）により、Trainer が各 Pod に PET_NNODES / PET_NODE_RANK / PET_MASTER_ADDR などを入れる。
+# torchrun はそれを読んで、ノードどうしをつなぐ。
+#
+# 失敗したとき: Pod が 1 つでも失敗（または削除）されると、その Job が失敗する（backoffLimit: 0）。
+# すると JobSet が、Job を全部作り直す（failurePolicy.maxRestarts: 2 回まで）。
+# DDP は全員がそろっていないと動けないので、1 台だけ作り直すより、全員で最後のチェックポイントからやり直すほうが確実。
+apiVersion: trainer.kubeflow.org/v1alpha1
+kind: ClusterTrainingRuntime
+metadata:
+  name: torch-cpu
+  labels:
+    trainer.kubeflow.org/framework: torch
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  mlPolicy:
+    numNodes: 1
+    # 1 Pod あたりのプロセス数は、TrainJob の spec.trainer.numProcPerNode で 1 にする
+    # （v2.4.0 ではランタイム側には書けない。書かないと「CPU の数」から決められる）
+    torch: {}
+  template:
+    spec:
+      failurePolicy:
+        maxRestarts: 2
+      replicatedJobs:
+        - name: node
+          template:
+            metadata:
+              labels:
+                # Trainer が「この Job が学習の本体」と見分けるためのラベル（必須）
+                trainer.kubeflow.org/trainjob-ancestor-step: trainer
+            spec:
+              backoffLimit: 0
+              template:
+                metadata:
+                  labels:
+                    app.kubernetes.io/part-of: mini-mlops
+                spec:
+                  restartPolicy: Never
+                  automountServiceAccountToken: false
+                  imagePullSecrets:
+                    - name: ghcr-pull
+                  containers:
+                    # コンテナ名は node（Trainer の決まり）。イメージ・コマンド・リソースは TrainJob が上書きする
+                    - name: node
+                      image: ghcr.io/OWNER/mini-mlops-trainer:0.1.1
+                      envFrom:
+                        - configMapRef: { name: training-env }
+                        - secretRef: { name: training-s3-credentials }
+                      # requests は 500m（各ノードの CPU の空きは 0.9 前後で、1 コアまるごとは空いていない）。limit は 1
+                      resources:
+                        requests: { cpu: 500m, memory: 1536Mi }
+                        limits: { cpu: "1", memory: 1792Mi }

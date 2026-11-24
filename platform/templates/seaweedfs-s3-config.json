@@ -15,7 +15,26 @@
       "actions": [
         "Read:raw", "List:raw",
         "Read:derived", "Write:derived", "List:derived",
+        "Read:curated", "Write:curated", "List:curated",
         "Read:argo-artifacts", "Write:argo-artifacts", "List:argo-artifacts"
+      ]
+    },
+    {
+      "name": "training",
+      "credentials": [
+        { "accessKey": "${TRAINING_AWS_ACCESS_KEY_ID}", "secretKey": "${TRAINING_AWS_SECRET_ACCESS_KEY}" }
+      ],
+      "actions": [
+        "Read:curated", "Write:curated", "List:curated"
+      ]
+    },
+    {
+      "name": "mlflow",
+      "credentials": [
+        { "accessKey": "${MLFLOW_AWS_ACCESS_KEY_ID}", "secretKey": "${MLFLOW_AWS_SECRET_ACCESS_KEY}" }
+      ],
+      "actions": [
+        "Read:mlflow", "Write:mlflow", "List:mlflow"
       ]
     }
   ]

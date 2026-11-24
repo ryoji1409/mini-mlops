@@ -1,0 +1,329 @@
+# シーン分類（時間帯・天候）の学習パイプライン（フェーズ 4）。
+#
+#   1. build-dataset … derived の変換済みフレーム + raw の metadata.json から、s3://curated/scene-cls/v<N>/ を作る。
+#                      batch/v1 Job を Kueue の data-processing キュー経由で動かす。同じ中身が既にあればスキップ
+#   2. train         … engine パラメータで学習の方式を選ぶ（どちらも Namespace training、Kueue の training キュー経由）
+#                      trainjob: Kubeflow Trainer の TrainJob（torchrun）→ 完了を wait-trainjob で待つ
+#                      rayjob  : KubeRay の RayJob（Ray Train）
+#   3. register      … 検証の正解率が閾値を超えたら、MLflow のモデルレジストリに scene-classifier として登録し、
+#                      エイリアス candidate を付ける。届かなければ登録せず、理由をログに出して正常終了
+#
+# 実行:  argo submit -n mlops --from workflowtemplate/train-scene-classifier -p workers=2 --watch
+#        argo submit -n mlops --from workflowtemplate/train-scene-classifier -p engine=rayjob --watch
+# 登録:  docs/setup/04-training.md の手順（OWNER を GitHub のユーザー名に置き換えて kubectl apply）
+#
+# 学習のジョブ名（TrainJob / RayJob の名前）は、ワークフローの名前と同じにする。
+# チェックポイントの置き場所（s3://curated/checkpoints/<名前>/）と、MLflow の run を探す目印（タグ）に使う。
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: train-scene-classifier
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  entrypoint: main
+  serviceAccountName: train-pipeline
+  imagePullSecrets:
+    - name: ghcr-pull
+  arguments:
+    parameters:
+      - name: dataset-version
+        # v1 はデータセット作成 0.1.0 で作ったもの。0.1.1 で「同じ中身か」の判定の仕方を変えたので、v1 と同じ番号では作れない（別の中身扱い）。
+        # 0.1.1 以降は v2 から
+        value: "2"
+        description: データセットのバージョン（s3://curated/scene-cls/v<N>）。同じ中身なら作り直さない
+      - name: engine
+        value: trainjob
+        enum: ["trainjob", "rayjob"]
+        description: 学習の方式（trainjob = Kubeflow Trainer + torchrun、rayjob = KubeRay + Ray Train）
+      - name: workers
+        value: "2"
+        enum: ["1", "2"]
+        description: 学習ワーカーの数（= world_size）。training キューの枠（2 CPU）に合わせて 2 まで
+      - name: epochs
+        value: "5"
+      - name: batch-size
+        value: "64"
+      - name: lr
+        value: "0.001"
+      - name: seed
+        value: "42"
+      - name: threshold
+        value: "0.8"
+        description: 登録の閾値（検証の正解率。時間帯・天候の低いほう）
+      - name: resume-from
+        value: ""
+        description: 前の学習（ワークフロー名 = ジョブ名）のチェックポイントから続けるとき、その名前
+      - name: priority
+        value: low
+        enum: ["low", "high"]
+      # イメージ。タグは各アプリの pyproject.toml の version（OWNER は登録するときに GitHub のユーザー名に置き換える）
+      - name: trainer-image
+        value: ghcr.io/OWNER/mini-mlops-trainer:0.1.1
+      - name: dataset-builder-image
+        value: ghcr.io/OWNER/mini-mlops-dataset-builder:0.1.1
+  # ワークフロー全体の制限時間（6 時間）= Kueue での待ち + データセット作成 + 学習
+  activeDeadlineSeconds: 21600
+  ttlStrategy:
+    secondsAfterCompletion: 604800
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 10m
+
+  templates:
+    - name: main
+      steps:
+        - - name: build-dataset
+            template: build-dataset
+        - - name: train-trainjob
+            template: train-trainjob
+            when: "{{workflow.parameters.engine}} == trainjob"
+          - name: train-rayjob
+            template: train-rayjob
+            when: "{{workflow.parameters.engine}} == rayjob"
+        - - name: register
+            template: register
+
+    # 1. データセット作成。batch/v1 Job にして、Kueue の data-processing キューを通す
+    #    （Argo のステップの Pod はそのままでは Kueue を通らないため、Kueue が扱える Job の形にする）
+    - name: build-dataset
+      # 同じバージョンのデータセットを、2 つのワークフローが同時に作らないようにする
+      synchronization:
+        mutexes:
+          - name: "scene-dataset-v{{workflow.parameters.dataset-version}}"
+      resource:
+        action: create
+        setOwnerReference: true
+        successCondition: status.succeeded > 0
+        failureCondition: status.failed > 0
+        manifest: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "{{workflow.name}}-dataset"
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              app.kubernetes.io/component: dataset-builder
+              kueue.x-k8s.io/queue-name: data-processing
+              kueue.x-k8s.io/priority-class: "{{workflow.parameters.priority}}"
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 3600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/part-of: mini-mlops
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                imagePullSecrets:
+                  - name: ghcr-pull
+                containers:
+                  - name: dataset-builder
+                    image: "{{workflow.parameters.dataset-builder-image}}"
+                    command: [dataset-builder, build, "--version={{workflow.parameters.dataset-version}}"]
+                    envFrom:
+                      - configMapRef: { name: pipeline-s3 }
+                      - secretRef: { name: pipeline-s3-credentials }
+                    env:
+                      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                        value: when_required
+                    # 約 2 万フレームの縮小を 1 プロセスで行う。縮小後の画像（数十 MB）はメモリに持つ
+                    resources:
+                      requests: { cpu: 500m, memory: 768Mi }
+                      limits: { cpu: "1", memory: 1536Mi }
+
+    # 2a. Kubeflow Trainer（TrainJob）で学習する。作ったら、完了を wait-trainjob で待つ
+    - name: train-trainjob
+      steps:
+        - - name: create
+            template: create-trainjob
+        - - name: wait
+            template: wait-trainjob
+
+    - name: create-trainjob
+      resource:
+        action: create
+        # 別の Namespace（training）のものには ownerReference を付けられないので付けない（片付けは手順書）
+        setOwnerReference: false
+        manifest: |
+          apiVersion: trainer.kubeflow.org/v1alpha1
+          kind: TrainJob
+          metadata:
+            name: "{{workflow.name}}"
+            namespace: training
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              # Kueue: training キュー（Namespace training の LocalQueue）に入れる
+              kueue.x-k8s.io/queue-name: training
+              kueue.x-k8s.io/priority-class: "{{workflow.parameters.priority}}"
+          spec:
+            # CPU 用の学習の雛形（platform/manifests/training/clustertrainingruntime-torch-cpu.yaml）
+            runtimeRef:
+              name: torch-cpu
+            trainer:
+              image: "{{workflow.parameters.trainer-image}}"
+              numNodes: {{workflow.parameters.workers}}
+              numProcPerNode: 1
+              # torchrun が PET_*（ノード数・自分の番号・rank 0 の場所）を読んで、各 Pod のプロセスをつなぐ
+              command: [torchrun, --no-python, trainer, train-torchrun]
+              args:
+                - "--dataset-uri=s3://curated/scene-cls/v{{workflow.parameters.dataset-version}}"
+                - "--job-name={{workflow.name}}"
+                - "--epochs={{workflow.parameters.epochs}}"
+                - "--batch-size={{workflow.parameters.batch-size}}"
+                - "--lr={{workflow.parameters.lr}}"
+                - "--seed={{workflow.parameters.seed}}"
+                - "--resume-from={{workflow.parameters.resume-from}}"
+              env:
+                - name: TRAINER_IMAGE
+                  value: "{{workflow.parameters.trainer-image}}"
+              # ワーカー 1 台あたり requests 500m / 1536Mi、limits 1 CPU / 1792Mi。
+              # requests を 1 CPU にしていたら、どのノードにも「1 コアまるごとの空き」が無く、2 台目が載らなかった
+              # （各ノードの空きは 0.9 CPU 前後。Kueue は合計の枠しか見ないので、受け入れたのに載らない状態が続いた）。
+              # limit は 1 のままなので、空いていれば 1 コアまで使える。スレッド数は OMP_NUM_THREADS=1
+              resourcesPerNode:
+                requests: { cpu: 500m, memory: 1536Mi }
+                limits: { cpu: "1", memory: 1792Mi }
+
+    - name: wait-trainjob
+      container:
+        image: "{{workflow.parameters.trainer-image}}"
+        # TrainJob の status.conditions を見張る（Argo の成功条件ではリストの中の条件を判定できないため）。
+        # Kueue で待っている間・JobSet が作り直している間は待ち続け、Complete で成功、Failed で失敗にする
+        command: [trainer, wait-trainjob, --namespace=training, "--name={{workflow.name}}"]
+        resources:
+          requests: { cpu: 50m, memory: 128Mi }
+          limits: { cpu: 500m, memory: 256Mi }
+
+    # 2b. KubeRay（RayJob）+ Ray Train で学習する
+    - name: train-rayjob
+      resource:
+        action: create
+        setOwnerReference: false
+        successCondition: status.jobStatus == SUCCEEDED
+        failureCondition: status.jobDeploymentStatus in (Failed, ValidationFailed)
+        manifest: |
+          apiVersion: ray.io/v1
+          kind: RayJob
+          metadata:
+            name: "{{workflow.name}}"
+            namespace: training
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              app.kubernetes.io/component: trainer
+              kueue.x-k8s.io/queue-name: training
+              kueue.x-k8s.io/priority-class: "{{workflow.parameters.priority}}"
+          spec:
+            suspend: true
+            entrypoint: >-
+              trainer train-ray --num-workers={{workflow.parameters.workers}} --placement-strategy=STRICT_SPREAD
+              --dataset-uri=s3://curated/scene-cls/v{{workflow.parameters.dataset-version}}
+              --job-name={{workflow.name}} --epochs={{workflow.parameters.epochs}}
+              --batch-size={{workflow.parameters.batch-size}} --lr={{workflow.parameters.lr}}
+              --seed={{workflow.parameters.seed}} --resume-from={{workflow.parameters.resume-from}}
+            shutdownAfterJobFinishes: true
+            ttlSecondsAfterFinished: 0
+            # 学習の実行時間の上限（Kueue で待った時間は含まれない）
+            activeDeadlineSeconds: 3600
+            backoffLimit: 0
+            submitterPodTemplate:
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                imagePullSecrets:
+                  - name: ghcr-pull
+                containers:
+                  - name: ray-job-submitter
+                    image: "{{workflow.parameters.trainer-image}}"
+                    resources:
+                      requests: { cpu: 100m, memory: 256Mi }
+                      limits: { cpu: 500m, memory: 512Mi }
+            rayClusterSpec:
+              rayVersion: "2.59.1"
+              # head: ドライバ（trainer train-ray）と Ray の管理だけ。学習は worker で動かす
+              headGroupSpec:
+                rayStartParams:
+                  num-cpus: "0"
+                  object-store-memory: "200000000"
+                  dashboard-host: "0.0.0.0"
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/part-of: mini-mlops
+                  spec:
+                    automountServiceAccountToken: false
+                    imagePullSecrets:
+                      - name: ghcr-pull
+                    containers:
+                      - name: ray-head
+                        image: "{{workflow.parameters.trainer-image}}"
+                        env:
+                          - name: TRAINER_IMAGE
+                            value: "{{workflow.parameters.trainer-image}}"
+                        envFrom:
+                          - configMapRef: { name: training-env }
+                          - secretRef: { name: training-s3-credentials }
+                        # Ray 2.59 の head は Dashboard などで約 2.3GB 使う（変換の RayJob と同じ）
+                        resources:
+                          requests: { cpu: 500m, memory: 2560Mi }
+                          limits: { cpu: "1", memory: 3Gi }
+              workerGroupSpecs:
+                - groupName: cpu
+                  replicas: {{workflow.parameters.workers}}
+                  minReplicas: {{workflow.parameters.workers}}
+                  maxReplicas: {{workflow.parameters.workers}}
+                  rayStartParams:
+                    # Ray から見た CPU は 2 つにする（Pod の実際の CPU limit は 1）。
+                    # 1 つを学習のワーカー、もう 1 つを Ray Data の読み込みタスクに使う。
+                    # 1 のままだと学習のワーカーが CPU を占有し、Ray Data のタスクが動けずに止まる。
+                    # ただし 2 つと名乗ると、1 つの Pod に学習ワーカーが 2 つ入れてしまう（メモリ不足になった）ので、
+                    # entrypoint の --placement-strategy=STRICT_SPREAD で、学習ワーカーを必ず別々の Pod に置く
+                    num-cpus: "2"
+                    object-store-memory: "300000000"
+                  template:
+                    metadata:
+                      labels:
+                        app.kubernetes.io/part-of: mini-mlops
+                    spec:
+                      automountServiceAccountToken: false
+                      imagePullSecrets:
+                        - name: ghcr-pull
+                      containers:
+                        - name: ray-worker
+                          image: "{{workflow.parameters.trainer-image}}"
+                          env:
+                            - name: TRAINER_IMAGE
+                              value: "{{workflow.parameters.trainer-image}}"
+                          envFrom:
+                            - configMapRef: { name: training-env }
+                            - secretRef: { name: training-s3-credentials }
+                          # TrainJob のワーカーと同じ（requests を 1 CPU にすると、どのノードにも載らない）
+                          resources:
+                            requests: { cpu: 500m, memory: 1536Mi }
+                            limits: { cpu: "1", memory: 1792Mi }
+
+    # 3. 評価とモデル登録
+    - name: register
+      outputs:
+        parameters:
+          - name: summary
+            valueFrom:
+              path: /tmp/register.json
+      container:
+        image: "{{workflow.parameters.trainer-image}}"
+        command:
+          - trainer
+          - register
+          - "--job-name={{workflow.name}}"
+          - "--threshold={{workflow.parameters.threshold}}"
+          - --summary-file=/tmp/register.json
+        env:
+          - name: MLFLOW_TRACKING_URI
+            value: http://mlflow.mlflow.svc:5000
+          - name: MLFLOW_DISABLE_AGENT_HINT
+            value: "1"
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: 500m, memory: 512Mi }

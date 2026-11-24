@@ -10,3 +10,5 @@ data:
   AWS_REGION: us-east-1
   RAW_URI: s3://raw
   DERIVED_URI: s3://derived
+  # フェーズ 4: データセット作成（dataset-builder）の出力先
+  CURATED_URI: s3://curated

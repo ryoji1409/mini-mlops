@@ -1,0 +1,11 @@
+# MLflow トラッキングサーバー（フェーズ 4）。Namespace mlflow にレプリカ 1 で立てる。
+# 適用（イメージ名の OWNER を GitHub のユーザー名に置き換える）:
+#   kubectl kustomize platform/manifests/mlflow | sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" | kubectl apply -f -
+# Secret（s3://mlflow のキー・GHCR の pull 用）は秘密情報なのでここには置かず、docs/setup/04-training.md 手順 2・5 で作る。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml

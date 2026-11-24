@@ -1,0 +1,36 @@
+# 学習のワークフロー（train-scene-classifier、フェーズ 4）の Pod が使う ServiceAccount と、Namespace mlops での権限。
+# Namespace training での権限（TrainJob / RayJob）は platform/manifests/training/rbac.yaml。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: train-pipeline
+  namespace: mlops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: train-pipeline
+  namespace: mlops
+rules:
+  # Argo の executor が、ステップの結果（出力パラメータなど）を書き込むのに必要
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+  # データセット作成の Job（batch/v1、Kueue の data-processing キュー経由）を作り、状態を見張るのに必要
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: train-pipeline
+  namespace: mlops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: train-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: train-pipeline
+    namespace: mlops

@@ -1,0 +1,28 @@
+[project]
+name = "dataset-builder"
+version = "0.1.1"
+description = "derived の変換済みフレームと raw の metadata.json から、学習用のデータセット（curated ゾーン、バージョン付き）を作る。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# バージョンは固定する（変換器・学習器と同じ版に揃える）
+dependencies = [
+    "numpy==2.2.6",
+    "pillow==13.0.0",
+    "pyarrow==23.0.1",
+]
+
+[project.scripts]
+# `dataset-builder build ...` で CLI を起動できるようにする
+dataset-builder = "dataset_builder.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

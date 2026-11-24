@@ -58,6 +58,19 @@ releases:
     values:
       - values/kuberay-operator.yaml
 
+  # 分散学習の operator（TrainJob → JobSet → Pod）。JobSet も同梱で入る。フェーズ 4 で導入。
+  # 学習の雛形（ClusterTrainingRuntime）は manifests/training/（CRD が入ってから apply する）。
+  # webhook が動き出すまで待つ（wait）
+  - name: kubeflow-trainer
+    namespace: kubeflow-system
+    createNamespace: true
+    chart: oci://ghcr.io/kubeflow/charts/kubeflow-trainer
+    version: 2.4.0
+    wait: true
+    timeout: 600
+    values:
+      - values/kubeflow-trainer.yaml
+
   # ジョブのキューイング（クォータの枠が空いたらジョブを受け入れる）。フェーズ 3 で導入。
   # チャートは OCI レジストリ（registry.k8s.io）から取る。キューの定義は manifests/kueue/（CRD が入ってから apply する）。
   # webhook が動き出すまで待つ（wait）。待たずにキューを作ると webhook に繋がらずエラーになるため

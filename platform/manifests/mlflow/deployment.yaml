@@ -1,0 +1,85 @@
+# MLflow トラッキングサーバー。
+#   - バックエンド: SQLite（/mlflow/mlflow.db、Longhorn の PVC）。SQLite は複数のプロセスからの同時書き込みに弱いので、
+#     レプリカ 1・ワーカー 1・更新方式 Recreate（古い Pod を消してから新しい Pod を作る）にする
+#   - 成果物: s3://mlflow。サーバーが代わりに読み書きする（--artifacts-destination、プロキシ方式）。
+#     学習コンテナは HTTP の API を呼ぶだけで、s3://mlflow のキーを持たなくてよい
+#   - 画面: ClusterIP のまま、port-forward でだけ開く（認証が無いので外に公開しない）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlflow
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mlflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mlflow
+        app.kubernetes.io/part-of: mini-mlops
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: mlflow
+          # 公式イメージ + boto3（apps/mlflow-server）。OWNER は適用するときに GitHub のユーザー名に置き換える
+          image: ghcr.io/OWNER/mini-mlops-mlflow:3.18.0
+          command:
+            - mlflow
+            - server
+            - --host=0.0.0.0
+            - --port=5000
+            - --workers=1
+            - --backend-store-uri=sqlite:////mlflow/mlflow.db
+            - --artifacts-destination=s3://mlflow
+            # MLflow 3.5 以降は、知らないホスト名で来たリクエストを拒否する（DNS リバインディング対策）。
+            # クラスタ内の Service 名と、port-forward（localhost）だけを許可する。「:*」はポート番号を問わない意味
+            - --allowed-hosts=mlflow.mlflow.svc:*,mlflow.mlflow.svc.cluster.local:*,localhost:*,127.0.0.1:*
+          ports:
+            - name: http
+              containerPort: 5000
+          env:
+            # MLflow 3.x のサーバーは、既定で裏の仕事（GenAI 向けのオンライン評価・トレースの整理などの定期タスク）用に
+            # ジョブ実行プロセス 1 つ + 処理プロセス 8 つ（各約 210MB、合計 2GB 超）を起動し、limit 1Gi では OOMKilled になった。
+            # この検証では使わない機能なので止める（止めると Web の本体 2 プロセス、合計約 500MB）
+            - name: MLFLOW_SERVER_ENABLE_JOB_EXECUTION
+              value: "false"
+            # s3://mlflow の接続先（SeaweedFS）とキー（Secret mlflow-s3-credentials、docs/setup/04-training.md 手順 2）
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: http://seaweedfs-all-in-one.storage.svc:8333
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            # 新しい boto3 が付ける CRC 系のチェックサムに、S3 互換ストレージが未対応のことがあるため、必要なときだけ付ける
+            - name: AWS_REQUEST_CHECKSUM_CALCULATION
+              value: when_required
+            - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+              value: when_required
+          envFrom:
+            - secretRef: { name: mlflow-s3-credentials }
+          volumeMounts:
+            - name: db
+              mountPath: /mlflow
+          # /health はホスト名の検査の対象外なので、kubelet の確認（Pod の IP で来る）も通る
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          # 予算 1GB
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: "1", memory: 1Gi }
+      volumes:
+        - name: db
+          persistentVolumeClaim:
+            claimName: mlflow-db

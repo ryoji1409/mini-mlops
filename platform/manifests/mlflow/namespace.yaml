@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlflow
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+---
+# resources を書き忘れたコンテナの既定値（すべての Pod に requests / limits を付けるための安全網）
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-resources
+  namespace: mlflow
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  limits:
+    - type: Container
+      default: { cpu: 500m, memory: 512Mi }
+      defaultRequest: { cpu: 50m, memory: 128Mi }

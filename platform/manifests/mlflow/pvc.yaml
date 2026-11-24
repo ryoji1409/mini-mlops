@@ -1,0 +1,16 @@
+# バックエンド（実験・run・パラメータ・メトリクス・モデルレジストリ）を入れる SQLite のファイル置き場。
+# 成果物（モデル・画像）は s3://mlflow に置くので、ここには小さなデータベースだけが入る。1Gi で十分。
+# Longhorn は各ノードのディスクに置ける大きさが限られている（1 ノード約 7GB）ので、小さくしておく。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-db
+  namespace: mlflow
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 1Gi

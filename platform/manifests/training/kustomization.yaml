@@ -1,0 +1,11 @@
+# 学習の雛形（ClusterTrainingRuntime）と、Namespace training の設定・権限（フェーズ 4）。
+# Kubeflow Trainer（helmfile の kubeflow-trainer）と Kueue のキュー（manifests/kueue、Namespace training を作る）の後に適用する。
+# 適用（イメージ名の OWNER を GitHub のユーザー名に置き換える）:
+#   kubectl kustomize platform/manifests/training | sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" | kubectl apply -f -
+# Secret（S3 のキー・GHCR の pull 用）は秘密情報なのでここには置かず、docs/setup/04-training.md 手順 5 で作る。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clustertrainingruntime-torch-cpu.yaml
+  - configmap-training-env.yaml
+  - rbac.yaml

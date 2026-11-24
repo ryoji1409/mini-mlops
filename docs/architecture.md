@@ -199,3 +199,122 @@ Pending」になりました（枠の計算とノードの実際の空きがず�
 - **デバイスごとの検証**: validate も `--device-id` で自分のデバイスだけを見る。
   全体を見ると、並行して動いている他のデバイスの書きかけのファイルを「マニフェストの無い残骸」と誤判定するため。
 - device-id を空にした「全デバイス」のワークフローは、デバイス指定のワークフローと同時に投げない（ロック名が別になるので取り合いになる）。
+
+## フェーズ 4 時点（分散学習と MLflow）
+
+```
+┌──────────────────────────────────────── Kubernetes ─────────────────────────────────────────┐
+│ ns mlops:  Workflow train-scene-classifier（SA train-pipeline）                               │
+│   ① build-dataset: batch/v1 Job（data-processing キュー）── derived + raw → s3://curated/scene-cls/v<N>/ │
+│   ② engine=trainjob: TrainJob ──▶ ns training                                               │
+│      engine=rayjob : RayJob   ──▶ ns training     （どちらも training キュー経由）           │
+│   ③ register: 正解率 ≥ 閾値なら MLflow レジストリに scene-classifier@candidate                 │
+│                                                                                             │
+│ ns kubeflow-system: kubeflow-trainer-controller-manager、jobset-controller                    │
+│ ns training:                                                                                │
+│   TrainJob ─▶ JobSet ─▶ Job <名前>-node-0 ─▶ Pod × ワーカー数（torchrun、DDP / gloo）       │
+│   RayJob   ─▶ RayCluster（head + worker × ワーカー数）─▶ Ray Train（TorchTrainer、DDP / gloo）│
+│        │ rank 0 だけ                       │ 全 rank                                         │
+│        ▼ HTTP                              ▼ S3（training ユーザー）                         │
+│ ns mlflow: MLflow（SQLite on Longhorn）     s3://curated/scene-cls/v<N>/（読む）               │
+│        │ S3（mlflow ユーザー）             s3://curated/checkpoints/<ジョブ名>/（書く）         │
+│        ▼                                                                                    │
+│   s3://mlflow（モデル・画像）                                                                │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 系譜（どのモデルが、どのデータから作られたか）
+
+```
+MLflow モデル scene-classifier@candidate（version のタグ: dataset.*, trainer.image, converter.versions, run_id）
+  └ run（パラメータ・メトリクス・混同行列・モデル。タグ dataset.manifest / dataset.hash）
+      └ s3://curated/scene-cls/v<N>/manifest.json（inputs: セッションごとの derived マニフェストのパスと sha256、dataset_hash）
+          └ s3://derived/_manifests/<session_id>.json（変換器の版、input.mcap のパスと sha256）
+              └ s3://raw/device=…/date=…/session_id=…/<id>.mcap
+```
+
+各段に「次の段のパス」と「その中身のハッシュ」を書いておくので、パスをたどるだけでなく、途中で中身が差し替わっていないかも照合できます
+（`trainer trace`、docs/setup/04-training.md 手順 11）。
+
+### 学習の設計判断
+
+#### 学習用と検証用はセッション単位で分ける
+
+同じセッションの連続したフレームはほとんど同じ見た目なので、フレーム単位でランダムに分けると、精度が不当に高く出ます。
+セッションごとに丸ごとどちらかに入れ、（時間帯, 天候）の 6 通りの組ごとに 2 セッションを検証用にします（検証用に全クラスが入るように）。
+そのため、確認用のデータを 86 セッション（組ごとに約 14 セッション）まで増やしました。
+
+#### 2 つの起動方式（TrainJob と RayJob）の使い分け
+
+| 観点 | TrainJob（Kubeflow Trainer + torchrun） | RayJob（KubeRay + Ray Train） |
+|---|---|---|
+| Pod | ワーカーだけ（2 台で requests 1 CPU / 3Gi） | head + ワーカー + submitter（2 台で requests 1.6 CPU / 約 5.8Gi） |
+| Kueue | training キューの自分の枠に収まる | メモリが training の枠（4.5Gi）では足りず、data-processing の空き枠を借りて動く |
+| データの読み込み | 各 rank が担当のファイルを丸ごと読んでメモリに置く | Ray Data が流しながら配る（大きなデータに向く） |
+| 失敗したとき | JobSet が全ワーカーを作り直し、学習コードがチェックポイントから再開（`failurePolicy.maxRestarts: 2`） | Ray Train がワーカーを作り直し、自分が保存したチェックポイントから再開（`FailureConfig.max_failures: 2`） |
+| 向いている場面 | PyTorch のコードをそのまま Kubernetes で動かしたい。軽い | 変換（Ray Data）と前処理・学習を Ray でまとめたい。データが大きい |
+
+どちらも同じ学習のコード（モデル・1 エポックの学習・評価・MLflow への記録）を使い、起動の部分（`torchrun_train.py` / `ray_train.py`）だけが違います。
+
+**ワーカーの Pod を消したときの実測**（10 エポック、ワーカー 2 台、3 エポック目の保存直後に消した）:
+
+| | TrainJob（JobSet） | RayJob（Ray Train） |
+|---|---|---|
+| 作り直される Pod | Job ごと全部（2 台とも新しい Pod）。`status.restarts` が 1 に | 消した Pod だけ（KubeRay が worker を 1 台作り直す。約 20 秒） |
+| 学習のプロセス | 新しい Pod で torchrun からやり直し | 残った Pod でも学習ワーカーのプロセスを作り直す（Ray Train が全ワーカーを再起動） |
+| 再開する場所 | 学習コードが `s3://curated/checkpoints/<名前>/epoch-0003.pt` を読む | Ray Train が自分で保存したチェックポイント（`…/checkpoints/ray/<名前>/checkpoint_…`）を渡す |
+| MLflow | 同じ run に記録を続ける（チェックポイントに run_id） | 同じ |
+| 結果 | 10 エポック完走 → 登録まで成功 | 同じ |
+
+どちらも「1 台が落ちたら全員で最後のチェックポイントから」という動きは同じです。違うのは、作り直しを Kubernetes 側（JobSet）がやるか、
+Ray の中（Ray Train）がやるかで、RayJob は消えた Pod だけを作り直すぶん、Pod の起動を待つ時間が短く済みます。
+
+**変換と同時に投げたときの実測**（変換 2 本を先に投げ、60 秒後に学習を投げた）:
+
+| | TrainJob 版 | RayJob 版 |
+|---|---|---|
+| データセット作成（data-processing キューの batch Job） | 変換 2 本の間は WaitingForQuota（Cohort のメモリ 10Gi を超える）。1 本終わると受け入れ | 同じ |
+| 学習 | training の自分の枠（1 CPU / 3Gi）に収まり、変換 1 本と並んですぐ動いた | 1.6 CPU / 5888Mi。変換 1 本（4864Mi）が動いている間は Cohort の残り 5376Mi に入らず WaitingForQuota。変換が終わると、data-processing から 1280Mi を借りて受け入れ |
+
+学習のパイプラインは、学習の前に「データセット作成」でも変換と同じ枠を取り合います。
+RayJob 版は head の分だけ重く、変換が 1 本でも動いていると始められませんでした。
+
+#### Ray のワーカーは「CPU 2 つ」と名乗る
+
+Ray Train の学習ワーカーは CPU を 1 つ予約します。Pod の CPU limit（1）と同じ数を Ray に名乗らせると、学習ワーカーが CPU を占有し、
+Ray Data の読み込みタスクが動けずに止まります。そこで worker は `num-cpus: "2"` で起動し（実際の limit は 1 のまま）、
+1 つを学習、1 つを読み込みに使います。
+
+ただし「CPU 2 つ」と名乗らせると、Ray からは 1 つの Pod に学習ワーカーが 2 つ入るように見えます。Ray Train は既定でワーカーを
+なるべく同じ場所にまとめる（PACK）ので、最初の実行では rank 0 と 1 が同じ Pod に入り、Pod のメモリ上限（1.75GB）の 95% を超えて
+Ray のメモリ監視に学習ワーカーが強制終了されました（もう 1 台の Pod は学習に使われていなかった）。
+`ScalingConfig(placement_strategy="STRICT_SPREAD")` で、学習ワーカーを必ず別々の Pod に置くようにしています。
+
+#### MLflow はサーバー経由で成果物を保存する
+
+MLflow は `--artifacts-destination s3://mlflow` で起動し、成果物の読み書きをサーバーが代わりに行います（プロキシ方式）。
+学習の Pod は HTTP の API を呼ぶだけで、`s3://mlflow` のキーを持ちません。学習の Pod が持つのは、データセットとチェックポイントのための
+`curated` のキー（training ユーザー）だけです。チェックポイントは `s3://mlflow` ではなく `s3://curated/checkpoints/` に置き、
+MLflow には最終のモデルだけを残します。
+
+- バックエンドは SQLite（Longhorn の PVC 1Gi）。SQLite は同時書き込みに弱いので、レプリカ 1・ワーカー 1・更新方式 Recreate
+- MLflow 3.x が既定で起動する裏の仕事用のプロセス（GenAI 向けの定期タスク。9 プロセス、合計 2GB 超）は使わないので止める
+  （`MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`。起動したままだと limit 1Gi で OOMKilled になった）
+- MLflow 3.5 以降は、知らないホスト名のリクエストを拒否する（`--allowed-hosts`）。クラスタ内の Service 名と localhost だけを許可
+- 画面で画像を開くとき、MLflow はまず S3 の署名付き URL で直接取ろうとし（ブラウザからクラスタ内の S3 には届かない）、失敗するとサーバー経由で取り直す
+
+#### リソースとクォータ
+
+| 部品 | requests / limits | 予算 |
+|---|---|---|
+| 学習ワーカー（1 台） | requests 500m / 1536Mi、limit 1 CPU / 1792Mi | 「Kubeflow Trainer + 学習ジョブ 4GB」: ワーカー 2 台 limit 3.5Gi + コントローラ 2 つ 256Mi ずつ |
+| Trainer / JobSet のコントローラ | 50m / 128Mi、limit 500m / 256Mi | 同上 |
+| MLflow | 100m / 512Mi、limit 1 CPU / 1Gi | 「MLflow 1GB」 |
+| データセット作成の Job | 500m / 768Mi、limit 1 CPU / 1536Mi | data-processing キューの枠の中 |
+
+MLflow とコントローラで CPU が約 0.2 増えるので、ノードで実際に使える CPU は約 4.3 になります。クォータの合計（4 CPU）は、まだその内側です。
+
+**合計だけでなく、1 台ごとの空きも見る**: 最初は学習ワーカーの requests を 1 CPU にしていましたが、各ノードの CPU の空きは 0.9 前後で、
+1 コアまるごと空いているノードがありませんでした。Kueue は合計の枠しか見ないので受け入れはするものの、2 台目の Pod が載らず、
+10 分ごとに Kueue が戻して受け入れ直すのを繰り返しました（waitForPodsReady）。requests を 500m に下げ（limit は 1 のまま）、
+空きが細切れでも載るようにしています。

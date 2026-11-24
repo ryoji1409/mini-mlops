@@ -20,17 +20,20 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-アクセスキーを作り、`.env` の `AWS_ACCESS_KEY_ID` などの空欄にエディタで書き込みます（4 つとも別の値にする）。
+アクセスキーを作り、`.env` の `*_ACCESS_KEY_ID` / `*_SECRET_ACCESS_KEY` の空欄（4 ユーザー × 2 = 8 つ）にエディタで書き込みます。
+後のフェーズで使うユーザーの分も、ここでまとめて作ります（すべて別の値にする）。
 
 ```bash
-openssl rand -hex 10 | tr 'a-f' 'A-F'    # アクセスキー（20 文字）→ AWS_ACCESS_KEY_ID、PIPELINE_AWS_ACCESS_KEY_ID
-openssl rand -hex 20                     # シークレットキー（40 文字）→ AWS_SECRET_ACCESS_KEY、PIPELINE_AWS_SECRET_ACCESS_KEY
+openssl rand -hex 10 | tr 'a-f' 'A-F'    # アクセスキー（20 文字）→ AWS_ACCESS_KEY_ID、PIPELINE_…、TRAINING_…、MLFLOW_…_ACCESS_KEY_ID
+openssl rand -hex 20                     # シークレットキー（40 文字）→ …_SECRET_ACCESS_KEY
 ```
 
 | ユーザー | `.env` の変数 | 権限 | 使う場所 |
 |---|---|---|---|
 | admin | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 全権限 | ホストからの管理・アップロード |
-| pipeline | `PIPELINE_AWS_ACCESS_KEY_ID` / `PIPELINE_AWS_SECRET_ACCESS_KEY` | `raw` 読み取りのみ、`derived` / `argo-artifacts` 読み書き | フェーズ 2 のクラスタ内のパイプライン |
+| pipeline | `PIPELINE_AWS_ACCESS_KEY_ID` / `PIPELINE_AWS_SECRET_ACCESS_KEY` | `raw` 読み取りのみ、`derived` / `curated` / `argo-artifacts` 読み書き | フェーズ 2 以降のクラスタ内のパイプライン（変換・データセット作成） |
+| training | `TRAINING_AWS_ACCESS_KEY_ID` / `TRAINING_AWS_SECRET_ACCESS_KEY` | `curated` 読み書き | フェーズ 4 の学習（データセットを読む・チェックポイントを書く） |
+| mlflow | `MLFLOW_AWS_ACCESS_KEY_ID` / `MLFLOW_AWS_SECRET_ACCESS_KEY` | `mlflow` 読み書き | フェーズ 4 の MLflow サーバー（成果物の保存） |
 
 `.env` を後から作り直すと、SeaweedFS に登録したキーと食い違います（キーを変えたら手順 2 からやり直す）。
 `.env.example` に変数が増えたときは、増えた行だけを `.env` に書き足します。
@@ -45,12 +48,17 @@ SeaweedFS は、Secret `storage/seaweedfs-s3-config` の JSON からユーザー
 set -a; source .env; set +a              # .env の変数をこのシェルに読み込む（以降の手順でも使う）
 
 kubectl create namespace storage --dry-run=client -o yaml | kubectl apply -f -
-envsubst '$AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY $PIPELINE_AWS_ACCESS_KEY_ID $PIPELINE_AWS_SECRET_ACCESS_KEY' \
-  < platform/templates/seaweedfs-s3-config.json \
+# 雛形の ${…} を .env の値で埋める。8 つのキーが全部埋まっていることを確かめてから Secret にする
+# （空のままや ${…} のまま登録すると、空・既知の文字列がキーになってしまうため）
+S3_KEYS='$AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY $PIPELINE_AWS_ACCESS_KEY_ID $PIPELINE_AWS_SECRET_ACCESS_KEY $TRAINING_AWS_ACCESS_KEY_ID $TRAINING_AWS_SECRET_ACCESS_KEY $MLFLOW_AWS_ACCESS_KEY_ID $MLFLOW_AWS_SECRET_ACCESS_KEY'
+envsubst "$S3_KEYS" < platform/templates/seaweedfs-s3-config.json | grep -c -E '"(accessKey|secretKey)": "(\$\{|")'    # 0 なら OK
+envsubst "$S3_KEYS" < platform/templates/seaweedfs-s3-config.json \
   | kubectl -n storage create secret generic seaweedfs-s3-config \
       --from-file=seaweedfs_s3_config=/dev/stdin --dry-run=client -o yaml \
   | kubectl apply -f -
 ```
+
+`grep -c` が 1 以上なら、`.env` に空のキーがあります。埋めてからやり直します。
 
 `--dry-run=client -o yaml | kubectl apply` にしているので、既に Secret があっても更新されます。
 **SeaweedFS が動いた後に Secret を変えたときは、`kubectl -n storage rollout restart deploy/seaweedfs-all-in-one` で再起動しないと反映されません。**

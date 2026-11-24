@@ -3,11 +3,41 @@
 ## これは何か
 
 パイプラインの各工程を Argo Workflows の WorkflowTemplate として定義します。
-ワークフローとその中の RayJob は Namespace `mlops` で動きます。
+ワークフローは Namespace `mlops` で動きます（変換の RayJob も `mlops`、学習の TrainJob / RayJob は `training`）。
 
 | テンプレート | 内容 | フェーズ |
 |---|---|---|
 | `mcap-convert` | raw の MCAP を Ray Data で derived に変換し、DuckDB で検証する。RayJob は Kueue のキュー経由で動く | 2（3 で Kueue 経由に） |
+| `train-scene-classifier` | データセットを作り（curated）、シーン分類を分散学習し（TrainJob か RayJob）、閾値を超えたら MLflow に登録する | 4 |
+
+### train-scene-classifier の流れ
+
+```
+build-dataset ──▶ train（engine で選ぶ）──────────────────────────▶ register
+ batch/v1 Job       trainjob: TrainJob を作る → wait-trainjob で完了を待つ   trainer register
+ data-processing    rayjob  : RayJob を作り、状態を見張る                   正解率 ≥ 閾値なら
+ キュー経由          （どちらも Namespace training、training キュー経由）     scene-classifier@candidate
+```
+
+| パラメータ | 既定 | 意味 |
+|---|---|---|
+| `dataset-version` | `1` | データセットのバージョン（`s3://curated/scene-cls/v<N>`）。同じ中身なら作り直さない、違う中身ならエラー |
+| `engine` | `trainjob` | `trainjob`（Kubeflow Trainer + torchrun）/ `rayjob`（KubeRay + Ray Train） |
+| `workers` | `2` | 学習ワーカーの数（world_size）。training キューの枠に合わせて 1 か 2 |
+| `epochs` / `batch-size` / `lr` / `seed` | `5` / `64` / `0.001` / `42` | 学習のパラメータ（MLflow に記録される） |
+| `threshold` | `0.8` | 登録の閾値（検証の正解率。時間帯・天候の低いほう） |
+| `resume-from` | 空 | 前の学習（ワークフロー名）のチェックポイントから続ける |
+| `priority` | `low` | Kueue の優先度 |
+| `trainer-image` / `dataset-builder-image` | `ghcr.io/OWNER/…:0.1.0` | 登録するときに OWNER を置き換える |
+
+- **ジョブ名 = ワークフロー名**: TrainJob / RayJob の名前をワークフロー名にして、チェックポイントの置き場所（`s3://curated/checkpoints/<名前>/`）と
+  MLflow の run の目印（タグ `mini-mlops.job_name`）に使う。register はこのタグで run を探す。
+- **TrainJob の完了待ち**: Argo の resource テンプレートの成功条件は `status.xxx == 値` の形しか書けず、TrainJob の `status.conditions`
+  （リストの中の `type: Complete`）を判定できない。そこで `trainer wait-trainjob` が Kubernetes の API で conditions を見張る。
+  JobSet が作り直している間・Kueue で待っている間は待ち続ける。
+- **データセット作成も Kueue を通す**: Argo のステップの Pod は Kueue を通らないので、batch/v1 Job の形にして data-processing キューに入れる。
+  同じバージョンを 2 つのワークフローが同時に作らないよう、mutex（`scene-dataset-v<N>`）を付けている。
+- **片付け**: TrainJob / RayJob は別の Namespace（training）なので ownerReference を付けられず、ワークフローを消しても残る（04-training.md の片付け）。
 
 ### mcap-convert の流れ
 
@@ -61,6 +91,7 @@ discover ──(未処理 > 0)──▶ convert（RayJob を作って待つ）�
 登録・実行・Ray Dashboard・隔離の確認の手順は [docs/setup/02-pipeline.md](../docs/setup/02-pipeline.md)（手順 7〜10）、
 Kueue でのキューイング・優先度・貸し借りの確認は [docs/setup/03-kueue.md](../docs/setup/03-kueue.md) にあります。
 **フェーズ 3 以降のテンプレートは Kueue が前提**です（Kueue が無いと RayJob が suspend のまま動かない）。
+train-scene-classifier の手順は [docs/setup/04-training.md](../docs/setup/04-training.md) にあります。
 よく使うコマンドだけ抜き出すと:
 
 ```bash
@@ -71,6 +102,11 @@ sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" pipelines/mcap-convert.yaml | kube
 argo submit -n mlops --from workflowtemplate/mcap-convert --watch
 argo submit -n mlops --from workflowtemplate/mcap-convert -p force=true --watch   # 作り直し
 argo submit -n mlops --from workflowtemplate/mcap-convert -p device-id=dev-011 -p priority=high   # デバイスを絞り、優先度 high で
+
+# 学習（フェーズ 4）
+sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" pipelines/train-scene-classifier.yaml | kubectl apply -f -
+argo submit -n mlops --from workflowtemplate/train-scene-classifier -p engine=trainjob -p workers=2 --watch
+argo submit -n mlops --from workflowtemplate/train-scene-classifier -p engine=rayjob --watch
 ```
 
 ## 動作確認コマンド
@@ -110,3 +146,5 @@ OK          dev-001-20261104T013238Z         imu=3000, gnss=300, frames_front=15
 | RayJob が `Pending` のまま（head / worker が `Pending`） | ノードのメモリが足りず配置できない（head は request 2.5Gi）。`kubectl describe pod` の Events を確認し、他の負荷を減らす |
 | validate が `ORPHAN` / `MISMATCH` で失敗 | apps/converter/README.md の「よくあるエラー」を参照。`argo submit ... -p force=true` で作り直せる |
 | `argo logs` でログが出ない | Pod が GC 済み（成功 10 分後）。UI ではアーティファクト（s3://argo-artifacts）に保存されたログが見られる |
+| train-scene-classifier の学習で失敗・止まる | [docs/setup/04-training.md](../docs/setup/04-training.md) の「よくあるエラー」を参照 |
+| wait-trainjob が `403 Forbidden` | ServiceAccount `mlops/train-pipeline` に training の TrainJob を get する権限が無い。`kubectl kustomize platform/manifests/training` を適用し直す |

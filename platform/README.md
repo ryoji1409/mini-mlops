@@ -11,6 +11,7 @@
 | `argo-workflows` | `argo` | `argo/argo-workflows` 2.0.18（v4.1.6） | ワークフローエンジン（WorkflowTemplate を実行） | 2 |
 | `kuberay-operator` | `ray-system` | `kuberay/kuberay-operator` 1.7.2 | RayJob / RayCluster の operator（Ray Data の変換ジョブを動かす） | 2 |
 | `kueue` | `kueue-system` | `oci://registry.k8s.io/kueue/charts/kueue` 0.20.7 | ジョブのキューイング（クォータの枠が空いたらジョブを受け入れる） | 3 |
+| `kubeflow-trainer` | `kubeflow-system` | `oci://ghcr.io/kubeflow/charts/kubeflow-trainer` 2.4.0（JobSet v0.13.0 を同梱） | 分散学習の operator（TrainJob → JobSet → Pod） | 4 |
 
 | Kustomize | 中身 | フェーズ |
 |---|---|---|
@@ -19,6 +20,8 @@
 | `manifests/kueue/` | Kueue のキュー定義（ResourceFlavor・Cohort・ClusterQueue 2 つ・LocalQueue 2 つ・WorkloadPriorityClass 2 つ）と Namespace `training` | 3 |
 | `manifests/kueue-check/` | Kueue の確認用の Job（training の枠を埋めるダミー、queue-name の無い Job）。Kustomize ではなく 1 ファイルずつ `kubectl create -f` | 3 |
 | `manifests/kueue-preemption-test/` | （任意）プリエンプションを有効にした観察用のキュー。観察が終わったら消す | 3 |
+| `manifests/mlflow/` | MLflow トラッキングサーバー（Namespace `mlflow`、SQLite 用の PVC 1Gi、Deployment、Service） | 4 |
+| `manifests/training/` | CPU 用の学習の雛形 `torch-cpu`（ClusterTrainingRuntime）、Namespace `training` の環境変数と権限 | 4 |
 
 ### Longhorn の構成（`values/longhorn.yaml`）
 
@@ -73,12 +76,33 @@
   互いに空き枠を借りられる（借りる上限は相手の枠全部）。プリエンプションは使わない。優先度は `high`（1000）/ `low`（100）。
   値の決め方は [docs/architecture.md](../docs/architecture.md) の「フェーズ 3」。
 
+### Kubeflow Trainer の構成（`values/kubeflow-trainer.yaml`、`manifests/training/`）
+
+- イメージ `ghcr.io/kubeflow/trainer/trainer-controller-manager:v2.4.0`、同梱の JobSet `registry.k8s.io/jobset/jobset:v0.13.0`。
+  どちらも requests 50m / 128Mi、limit 500m / 256Mi（チャートの既定は Trainer が resources 無し、JobSet が limit 4Gi なので指定する）。
+- 同梱の学習用ランタイムは入れない（`runtimes.defaultEnabled: false`）。どれも CUDA 前提のイメージなので、CPU 用の `torch-cpu` を自分で定義する。
+- `torch-cpu`: JobSet の中身は `node` という 1 種類のジョブ。Pod が 1 つでも失敗するとその Job が失敗し（`backoffLimit: 0`）、
+  JobSet が全部作り直す（`failurePolicy.maxRestarts: 2`）。学習のコードがチェックポイントから再開する。
+- webhook が見るのは Trainer 自身のリソース（TrainJob・ランタイム）と、JobSet のラベルが付いた Pod だけ。基盤部品の Pod には関わらない。
+- Kueue の TrainJob 連携（フェーズ 3 で有効化済み）は、Trainer の CRD が入ると Kueue が自動で動かし始める。
+
+### MLflow の構成（`manifests/mlflow/`、イメージは `apps/mlflow-server`）
+
+- 公式イメージ（3.18.0）+ boto3。バックエンドは SQLite（Longhorn の PVC 1Gi）、レプリカ 1、ワーカー 1、更新方式 Recreate。
+- 成果物は `s3://mlflow`。サーバー経由で読み書きする（`--artifacts-destination`）ので、学習の Pod に `s3://mlflow` のキーを配らない。
+- `--allowed-hosts` でクラスタ内の Service 名（`mlflow.mlflow.svc:*`）と `localhost:*` だけを許可（MLflow 3.5 以降の DNS リバインディング対策）。
+- 画面は ClusterIP のまま `kubectl -n mlflow port-forward svc/mlflow 5050:5000` でだけ開く（認証が無いので外に公開しない）。
+- リソース: requests 100m / 512Mi、limit 1 CPU / 1Gi（予算 1GB）。MLflow 3.x が既定で起動する裏の仕事用のプロセス（9 つ、合計 2GB 超）は
+  `MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false` で止めている（起動したままだと OOMKilled になった）。
+
 ### S3 のユーザー（`templates/seaweedfs-s3-config.json`）
 
 | ユーザー | キー（.env） | 権限 | 使う場所 |
 |---|---|---|---|
 | `admin` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 全権限 | ホストからの管理・アップロード |
-| `pipeline` | `PIPELINE_AWS_ACCESS_KEY_ID` / `PIPELINE_AWS_SECRET_ACCESS_KEY` | `raw` 読み取りのみ、`derived` / `argo-artifacts` 読み書き | クラスタ内の Argo / Ray（Secret `mlops/pipeline-s3-credentials`） |
+| `pipeline` | `PIPELINE_AWS_ACCESS_KEY_ID` / `PIPELINE_AWS_SECRET_ACCESS_KEY` | `raw` 読み取りのみ、`derived` / `curated` / `argo-artifacts` 読み書き | クラスタ内の Argo / Ray（Secret `mlops/pipeline-s3-credentials`）。変換とデータセット作成 |
+| `training` | `TRAINING_AWS_ACCESS_KEY_ID` / `TRAINING_AWS_SECRET_ACCESS_KEY` | `curated` 読み書き | 学習の Pod（Secret `training/training-s3-credentials`）。データセットを読む・チェックポイントを書く |
+| `mlflow` | `MLFLOW_AWS_ACCESS_KEY_ID` / `MLFLOW_AWS_SECRET_ACCESS_KEY` | `mlflow` 読み書き | MLflow サーバー（Secret `mlflow/mlflow-s3-credentials`） |
 
 ## 実行手順
 
@@ -90,6 +114,7 @@
 | 1 | [docs/setup/01-storage.md](../docs/setup/01-storage.md) | S3 認証の Secret、`seaweedfs` |
 | 2 | [docs/setup/02-pipeline.md](../docs/setup/02-pipeline.md) | `manifests/pipelines`、Secret、`argo-workflows`・`kuberay-operator` |
 | 3 | [docs/setup/03-kueue.md](../docs/setup/03-kueue.md) | `kueue`、`manifests/kueue` |
+| 4 | [docs/setup/04-training.md](../docs/setup/04-training.md) | `kubeflow-trainer`、`manifests/mlflow`・`manifests/training`、Secret |
 
 Helmfile は `-l name=<リリース名>` で 1 つずつ入れられます。`-l` なしの `helmfile -f platform/helmfile.yaml apply` は全リリースを入れます
 （SeaweedFS は `needs` で Longhorn の後、Longhorn は `wait` で起動を待つ）。
@@ -102,13 +127,16 @@ helmfile -f platform/helmfile.yaml apply
 ## 動作確認コマンド
 
 ```bash
-helmfile -f platform/helmfile.yaml list                     # 5 リリースと固定したチャートの版
+helmfile -f platform/helmfile.yaml list                     # 6 リリースと固定したチャートの版
 kubectl get storageclass                                    # longhorn (default) だけ
 kubectl -n longhorn-system get pod
 kubectl -n storage get pod,pvc
 kubectl -n argo get pod
 kubectl -n ray-system get pod
 kubectl -n kueue-system get pod
+kubectl -n kubeflow-system get pod
+kubectl -n mlflow get pod,pvc
+kubectl get clustertrainingruntime
 kubectl get clusterqueue -o wide                            # data-processing / training が ACTIVE True
 kubectl get localqueue -A
 kubectl -n mlops get sa,role,rolebinding,configmap,secret,limitrange
@@ -124,6 +152,10 @@ argo-workflows-server-xxxxxxxxxx-xxxxx                1/1  Running
 argo-workflows-workflow-controller-xxxxxxxxxx-xxxxx   1/1  Running
 kuberay-operator-xxxxxxxxxx-xxxxx                     1/1  Running
 kueue-controller-manager-xxxxxxxxxx-xxxxx             1/1  Running
+jobset-controller-xxxxxxxxxx-xxxxx                    1/1  Running
+kubeflow-trainer-controller-manager-xxxxxxxxxx-xxxxx  1/1  Running
+mlflow-xxxxxxxxxx-xxxxx                               1/1  Running
+torch-cpu
 data-processing   mlops    BestEffortFIFO   0   0   True   Ready
 training          mlops    BestEffortFIFO   0   0   True   Ready
 serviceaccount/mcap-pipeline、role/mcap-pipeline、configmap/pipeline-s3、secret/pipeline-s3-credentials、secret/ghcr-pull、limitrange/default-resources
@@ -154,4 +186,7 @@ serviceaccount/mcap-pipeline、role/mcap-pipeline、configmap/pipeline-s3、secr
 | `workflow-controller` が `OOMKilled` | 履歴のワークフローが溜まりすぎた。`argo list -n mlops` で確認し、`ttlStrategy`（7 日）より早く消すなら `argo delete -n mlops --completed` |
 | `kubectl apply -k platform/manifests/kueue` が `failed calling webhook ... connection refused` | Kueue の webhook がまだ起動していない。`kubectl -n kueue-system rollout status deploy/kueue-controller-manager` を待って再実行 |
 | `kubectl` のたびに `couldn't get resource list for visibility.kueue.x-k8s.io/v1beta2` の警告 / Namespace の削除が終わらない | Kueue の Pod が落ちていて、visibility API（APIService）が応答しない。Kueue を復旧させる |
+| `kubeflow-trainer` の apply が webhook のエラーで止まる / `manifests/training` の apply が `failed calling webhook` | Trainer の webhook がまだ起動していない。`kubectl -n kubeflow-system rollout status deploy/kubeflow-trainer-controller-manager` を待って再実行 |
+| MLflow の Pod が `OOMKilled` → `CrashLoopBackOff` | 裏の仕事用のプロセス（ジョブ実行）が起動している。Deployment に `MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false` があるか確認 |
+| MLflow の Pod が `CrashLoopBackOff`、ログに `unable to open database file` | PVC のマウント先に書けない。`kubectl -n mlflow describe pod` で PVC が Bound か、Longhorn のボリュームが健全か確認 |
 | `kueue-controller-manager` が `OOMKilled` | Workload が溜まりすぎた。終わったワークフロー（と RayJob・Workload）を `argo delete -n mlops --completed` で消し、メモリ予算の範囲で limit を上げる |

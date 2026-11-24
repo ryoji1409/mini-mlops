@@ -1,0 +1,19 @@
+# 学習の Pod（TrainJob・RayJob）に入れる環境変数。S3 のキーは Secret training-s3-credentials で別に入れる。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: training-env
+  namespace: training
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+data:
+  AWS_ENDPOINT_URL: http://seaweedfs-all-in-one.storage.svc:8333
+  AWS_REGION: us-east-1
+  # チェックポイントの置き場所（s3://mlflow とは分ける。MLflow には最終のモデルだけを置く）
+  CHECKPOINT_ROOT: s3://curated/checkpoints
+  # MLflow のサーバー（成果物もサーバー経由で保存するので、s3://mlflow のキーは要らない）
+  MLFLOW_TRACKING_URI: http://mlflow.mlflow.svc:5000
+  # PyTorch などのスレッド数を Pod の CPU limit（1）に合わせる。多いと CPU を取り合ってかえって遅くなる
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  MLFLOW_DISABLE_AGENT_HINT: "1"
