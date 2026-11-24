@@ -38,7 +38,8 @@ discover ──(未処理 > 0)──▶ convert（RayJob を作って待つ）�
   `suspend: true` で作る。Kueue がクォータの空きを確かめて受け入れると suspend が外れ、Ray クラスタが立ち上がる。
   枠が足りない間は Ray の Pod を 1 つも作らない（全部か無しか）。キューの設計は docs/architecture.md の「フェーズ 3」。
 - **制限時間**: ワークフロー全体は 6 時間（Kueue での待ち + 実行）、RayJob は 30 分（実行だけ。KubeRay は受け入れ時に開始時刻を付け直す）。
-- **後片付け**: `shutdownAfterJobFinishes: true` + `ttlSecondsAfterFinished: 120` で、ジョブ終了の 2 分後に Ray クラスタが消える。
+- **後片付け**: `shutdownAfterJobFinishes: true` + `ttlSecondsAfterFinished: 0` で、ジョブが終わったらすぐ Ray クラスタを消す。
+  Kueue はジョブ終了と同時に枠を返すので、Ray クラスタを残すと次に受け入れたジョブの Pod がノードに載らなくなる（フェーズ 3 で実際に起きた）。
   RayJob 自体は ownerReference でワークフローに紐づき、ワークフローが消える（7 日後）と一緒に消える。
 - **同時実行**: mutex 名を `mcap-convert-<device-id>` にして、**同じデバイスのワークフローは 1 つずつ**（同じセッションの取り合いを防ぐ）。
   別のデバイスは並んで動き、RayJob の順番は Kueue が決める。device-id を空にした全デバイスの実行は、デバイス指定の実行と同時に投げない。

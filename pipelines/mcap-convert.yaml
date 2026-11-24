@@ -143,10 +143,13 @@ spec:
             suspend: true
             # Ray クラスタの head 上で実行されるコマンド（変換の本体）。未処理の判定は中でもう一度行う
             entrypoint: converter convert --force={{workflow.parameters.force}} --device-id={{workflow.parameters.device-id}}
-            # ジョブが終わったら Ray クラスタ（head / worker の Pod）を消す。
-            # 120 秒待つのは、終了直後の Ray Dashboard やログを確認できるようにするため
+            # ジョブが終わったら、すぐに Ray クラスタ（head / worker の Pod）を消す。
+            # Kueue はジョブが終わった時点でクォータを返し、次のジョブを受け入れる。
+            # Ray クラスタを残しておくと（以前は 120 秒残していた）、ノードの CPU を使ったままになり、
+            # 次に受け入れたジョブの worker がノードに載らず Pending になった（フェーズ 3 の確認で実際に起きた）。
+            # ジョブのログは submitter の Job（kubectl logs job/<RayJob 名>）と Argo のアーティファクトに残る
             shutdownAfterJobFinishes: true
-            ttlSecondsAfterFinished: 120
+            ttlSecondsAfterFinished: 0
             # 変換の実行時間の上限（30 分）。KubeRay は Kueue に受け入れられて suspend が外れた時点で
             # 開始時刻（status.startTime）を付け直すので、キューで待っていた時間は含まれない
             # （KubeRay v1.7.2 の rayjob_controller.go の initRayJobStatusIfNeed で確認）

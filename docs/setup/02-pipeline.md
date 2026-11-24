@@ -180,7 +180,7 @@ Argo の UI（認証モード server。ClusterIP のまま port-forward でだ�
 kubectl -n argo port-forward svc/argo-workflows-server 2746:2746     # → http://localhost:2746（Namespace は mlops を選ぶ）
 ```
 
-Ray Dashboard（convert ステップの RayJob が動いている間だけ。ジョブ終了の 120 秒後に Ray クラスタが消える）:
+Ray Dashboard（convert ステップの RayJob が動いている間だけ。ジョブが終わるとすぐに Ray クラスタが消える）:
 
 ```bash
 kubectl -n mlops get rayjob -w                                        # RayJob ができるのを待つ（Ctrl-C）

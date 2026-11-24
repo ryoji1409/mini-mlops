@@ -149,7 +149,7 @@ argo submit -n mlops --from workflowtemplate/mcap-convert -p device-id=dev-011 -
 |---|---|---|---|
 | RayJob を作った直後 | `ADMITTED` が空（まだ判定前） | `true` / `Suspended` | なし |
 | Kueue が受け入れた | `ADMITTED=True` | `false` / `Initializing` → `Running` | head 1 + worker 2 + submitter 1 |
-| 変換が終わった | `FINISHED=True` | `false` / `Complete`、JOB は `SUCCEEDED` | 2 分後に消える |
+| 変換が終わった | `FINISHED=True` | `false` / `Complete`、JOB は `SUCCEEDED` | すぐに消える |
 
 Workload の中身を見ます（受け入れたときにクォータをいくつ使ったか）。
 
@@ -225,14 +225,21 @@ memory  total=9728Mi   borrowed=4096Mi    ← 同じく 4Gi を借りている�
 kubectl get --raw "/apis/visibility.kueue.x-k8s.io/v1beta2/clusterqueues/data-processing/pendingworkloads" | python3 -m json.tool | grep -E '"name"|positionInClusterQueue|priority'
 ```
 
-`describe` で、待っている Workload の理由を見ます。
+待っている Workload の理由は、QuotaReserved 条件に出ます（v0.20 では Reason が `WaitingForQuota`）。
 
 ```bash
-kubectl -n mlops describe workloads | grep -B2 -A3 "Pending"
-# Type: QuotaReserved  Status: False  Reason: Pending
-# Message: couldn't assign flavors to pod set head: insufficient unused quota for cpu in flavor cpu-standard, ... more needed
-#          ↑ 例（文言は版によって少し違う）。枠（Cohort 全体 4 CPU）の残りが足りないので待っている。
-#            ノードの空きではなく、クォータで止めている
+kubectl -n mlops get workloads -o custom-columns='NAME:.metadata.name,RESERVED:.status.conditions[?(@.type=="QuotaReserved")].status,REASON:.status.conditions[?(@.type=="QuotaReserved")].reason,MESSAGE:.status.conditions[?(@.type=="QuotaReserved")].message'
+# 例: rayjob-mcap-convert-xxxxx-xxxxx  False  WaitingForQuota  couldn't assign flavors to pod set head: insufficient unused quota for cpu ...
+#     ↑ 枠（Cohort 全体 4 CPU）の残りが足りないので待っている。ノードの空きではなく、クォータで止めている（文言は版によって少し違う）
+```
+
+順番に受け入れられたことは、RayJob の START TIME（KubeRay が受け入れ時に付ける開始時刻）と、先に動いていた RayJob の END TIME を比べて確かめます。
+
+```bash
+kubectl -n mlops get rayjob --sort-by=.status.startTime
+# 待っていた RayJob の START TIME が、先の RayJob の END TIME の 1 秒ほど後になっていれば、空きが出た直後に受け入れられている。
+# 待っている間の RayJob は DEPLOYMENT STATUS が Suspended、RAY CLUSTER NAME が空（Ray クラスタはまだ作られていない）。
+# START TIME は作成時刻が入っているが、受け入れられた時点で付け直される（KubeRay の仕様）
 ```
 
 4 本とも終わったら、ワークフローがすべて成功していることを確かめます。
@@ -297,10 +304,11 @@ kubectl get --raw "/apis/visibility.kueue.x-k8s.io/v1beta2/clusterqueues/data-pr
 
 今動いている 1 本が終わると、high が次に受け入れられることを監視の画面で確かめます。
 受け入れられた順は、Workload の Admitted 条件の時刻で比べられます。
+待っている Workload にも `Admitted=False` の条件が付いていて時刻が入るので、**ADMITTED が True の行だけ** を見ます。
 
 ```bash
 kubectl -n mlops get workloads --sort-by='.status.conditions[?(@.type=="Admitted")].lastTransitionTime' \
-  -o custom-columns='NAME:.metadata.name,PRIORITY:.spec.priorityClassRef.name,ADMITTED_AT:.status.conditions[?(@.type=="Admitted")].lastTransitionTime'
+  -o custom-columns='NAME:.metadata.name,PRIORITY:.spec.priorityClassRef.name,ADMITTED:.status.conditions[?(@.type=="Admitted")].status,AT:.status.conditions[?(@.type=="Admitted")].lastTransitionTime'
 ```
 
 すべて終わったら、ダミーの Job を消します（training の枠が空き、data-processing が借りられる状態に戻る）。
@@ -351,7 +359,7 @@ kubectl -n mlops describe workloads | grep -E "Name:|Evicted|Preempted"
 kubectl -n mlops get events --sort-by=.lastTimestamp | grep -i -E "preempt|evict|suspend" | tail
 ```
 
-予想される動き（KubeRay v1.7.2 のコードから。実際の結果を `notes/progress.md` に記録する）:
+実際に観察した動き（KubeRay v1.7.2 のコードから予想したとおり）:
 
 1. Kueue が low の Workload を追い出し（`Evicted`、理由 `Preempted`）、low の RayJob の `suspend` を `true` に戻す
 2. KubeRay が low の Ray クラスタと submitter を **削除** し、RayJob を `Suspending` → `Suspended` にする（実行中の変換は途中で止まる）
@@ -359,6 +367,26 @@ kubectl -n mlops get events --sort-by=.lastTimestamp | grep -i -E "preempt|evict
 4. high が終わると low が再び受け入れられ、**Ray クラスタを作り直して最初から** 実行する（`status.startTime` も付け直される）。
    ただし変換器はセッションごとにマニフェストを書くので、追い出される前に書き終えたセッションは「変換済み」としてスキップされる
 5. low のワークフローは失敗せずに待ち続け、最後は成功する（`Suspended` は failureCondition に当たらない）
+
+low の RayJob の状態の移り変わり（`kubectl get rayjob -w`）:
+
+```
+mcap-convert-<low>    Initializing                     ← 動いている
+mcap-convert-<high>   true   Initializing → Suspending → Suspended   ← high は作られた直後、いったん待ち（通常どおり）
+mcap-convert-<low>    true   Initializing → Suspending → Suspended   ← 追い出された（SUSPEND が true に戻る。Ray クラスタは削除）
+mcap-convert-<high>   Initializing → Running → Complete             ← high が動く
+mcap-convert-<low>    Initializing → …                              ← 空いたので再受け入れ。Ray クラスタを作り直して最初から
+```
+
+Kueue のイベント（`kubectl -n mlops get events`）:
+
+```
+Normal   Preempted                     Preempted to accommodate a workload ... preemptor effective priority: 1000 ...; preemptee effective priority: 100
+Warning  WaitingForPreemptedWorkloads  couldn't assign flavors to pod set head: insufficient unused quota ... Pending the preemption of 1 workload(s)
+```
+
+追い出された low の Ray の Pod が消えきるまでの数十秒、high の Pod が `Insufficient cpu` で Pending になることがあります
+（Kueue は追い出しを決めた時点で枠を移すが、Pod の終了には時間がかかる）。消えれば自動で載ります。
 
 観察が終わったら、プリエンプション用のキューを消して元に戻します（キューの定義だけを消す操作。データは消えない）。
 
@@ -376,6 +404,7 @@ kubectl delete -k platform/manifests/kueue-preemption-test
 | RayJob がずっと `Suspended`、`kubectl -n mlops get workloads` に何も無い | Workload が作られていない。RayJob の `kueue.x-k8s.io/queue-name` ラベルと LocalQueue の名前（`kubectl -n mlops get localqueue`）が一致しているか、Kueue のログ（`kubectl -n kueue-system logs deploy/kueue-controller-manager`）を確認 |
 | Workload が Pending のまま、Message に `LocalQueue ... doesn't exist` / `ClusterQueue ... is inactive` | 手順 3 のキューが作られていない / ResourceFlavor が無い。`kubectl get clusterqueue -o wide` の `ACTIVE` を確認 |
 | Workload の Message に `WorkloadPriorityClass ... not found` | `-p priority=` に high / low 以外を指定した（ワークフローのパラメータは enum で high / low に限っている） |
+| 受け入れられたのに Ray の worker が `Pending`、`describe pod` に `Insufficient cpu`。終わったはずの RayJob の Ray の Pod が残っている | Kueue はジョブ終了と同時に枠を返すが、Ray クラスタが残っているとノードの CPU が空かない。RayJob の `ttlSecondsAfterFinished` が 0 になっているか確認（以前の 120 では実際に起きた）。古いテンプレートで投げた分は、残った Ray クラスタが消えれば自動で載る |
 | 受け入れられたのに Ray の Pod が `Pending`（ノードの空きが足りない） | クォータより実際のノードの空きが小さい（他の Pod が増えた等）。10 分で Kueue が追い出して並び直させる（waitForPodsReady）。`kubectl describe node` で空きを確認し、クォータ（`platform/manifests/kueue/clusterqueue-*.yaml`）を下げる |
 | Workload が `Evicted`（理由 `PodsReadyTimeout`）を繰り返し、最後に `Active: False` | 受け入れ後 10 分以内に Ray クラスタが Ready にならなかった（イメージの取得に時間がかかった等）を 3 回繰り返した。原因を直してから、ワークフローを止めて投げ直す |
 | ワークフローが `Pending`、`waiting for lock` | 同じデバイスのワークフローが動いている（デバイスごとに 1 つずつ）。`argo list -n mlops` で確認 |
