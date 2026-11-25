@@ -1,0 +1,113 @@
+# 選別とサンプル一覧（manifest）の作成（フェーズ 5）。
+#
+#   select … DuckDB の SQL（apps/indexer/src/indexer/sql/<sql>.sql）でセグメントを選び、
+#            1 サンプル = segment_id + GOP（MCAP 参照位置）+ GOP 内のフレーム番号 + 正解値 の一覧を作って、
+#            シャードに分けて s3://curated/<dataset>/v<version>/ に書く。
+#            同じバージョンに同じ中身が既にあればスキップ、違う中身ならエラー（バージョンは書き換えない）
+# 先に build-video-index（索引とタグ付け）を実行しておくこと。
+#
+# 実行:  argo submit -n mlops --from workflowtemplate/select-and-curate -p dataset=night-rain -p version=1 -p sql=night_rain --watch
+# 登録:  docs/setup/05-video-index.md の手順（OWNER を GitHub のユーザー名に置き換えて kubectl apply）
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: select-and-curate
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  entrypoint: select
+  serviceAccountName: curate-pipeline
+  imagePullSecrets:
+    - name: ghcr-pull
+  arguments:
+    parameters:
+      - name: dataset
+        value: night-rain
+        description: データセット名（s3://curated/<名前>/v<N>/）
+      - name: version
+        value: "1"
+      - name: sql
+        value: night_rain
+        description: 選別の SQL の名前（apps/indexer/src/indexer/sql/ にあるファイル名から .sql を除いたもの）
+      - name: frames
+        value: first
+        enum: ["first", "random", "all"]
+        description: GOP のどのフレームをサンプルにするか
+      - name: seed
+        value: "0"
+        description: frames=random のときの乱数の種
+      - name: gops-per-shard
+        value: "50"
+      - name: segment-ids-uri
+        value: ""
+        description: 外から渡す segment_id の一覧（Parquet）。SQL から candidates という表で使える（例として検索の結果）
+      - name: priority
+        value: low
+        enum: ["low", "high"]
+      - name: indexer-image
+        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.0
+  activeDeadlineSeconds: 3600
+  ttlStrategy:
+    secondsAfterCompletion: 604800
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 10m
+
+  templates:
+    - name: select
+      # 同じデータセット・バージョンを、2 つのワークフローが同時に作らないようにする
+      synchronization:
+        mutexes:
+          - name: "curate-{{workflow.parameters.dataset}}-v{{workflow.parameters.version}}"
+      resource:
+        action: create
+        setOwnerReference: true
+        successCondition: status.succeeded > 0
+        failureCondition: status.failed > 0
+        manifest: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "{{workflow.name}}-select"
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              app.kubernetes.io/component: indexer
+              kueue.x-k8s.io/queue-name: data-processing
+              kueue.x-k8s.io/priority-class: "{{workflow.parameters.priority}}"
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 3600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/part-of: mini-mlops
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                imagePullSecrets:
+                  - name: ghcr-pull
+                containers:
+                  - name: indexer
+                    image: "{{workflow.parameters.indexer-image}}"
+                    command:
+                      - indexer
+                      - select
+                      - "--dataset={{workflow.parameters.dataset}}"
+                      - "--version={{workflow.parameters.version}}"
+                      - "--sql={{workflow.parameters.sql}}"
+                      - "--frames={{workflow.parameters.frames}}"
+                      - "--seed={{workflow.parameters.seed}}"
+                      - "--gops-per-shard={{workflow.parameters.gops-per-shard}}"
+                    envFrom:
+                      - configMapRef: { name: pipeline-s3 }
+                      - secretRef: { name: pipeline-s3-credentials }
+                    env:
+                      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                        value: when_required
+                      # 空なら使わない（indexer は空文字を「指定なし」として扱う）
+                      - name: SEGMENT_IDS_URI
+                        value: "{{workflow.parameters.segment-ids-uri}}"
+                    resources:
+                      requests: { cpu: 200m, memory: 256Mi }
+                      limits: { cpu: "1", memory: 768Mi }

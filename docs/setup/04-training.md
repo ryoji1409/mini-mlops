@@ -107,10 +107,11 @@ V=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/dataset-builder/pyproject.toml)
 docker buildx build --platform "$PLATFORM" --build-arg BUILDER_VERSION="$V" --build-arg GIT_COMMIT="$(git rev-parse --short HEAD)" \
   --tag "ghcr.io/${GHCR_USER}/mini-mlops-dataset-builder:${V}" --push apps/dataset-builder
 
-# 学習器（Ray のイメージがベースなので、変換器と同じく大きい。下の層は変換器と共通）
+# 学習器（Ray のイメージがベースなので、変換器と同じく大きい。下の層は変換器と共通）。
+# 0.2.0 からは同じリポジトリのライブラリ（apps/indexer・apps/navi-raster）も入れるので、ビルドの起点は apps/（-f で Dockerfile を指定）
 V=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/trainer/pyproject.toml)
 docker buildx build --platform "$PLATFORM" --build-arg TRAINER_VERSION="$V" --build-arg GIT_COMMIT="$(git rev-parse --short HEAD)" \
-  --tag "ghcr.io/${GHCR_USER}/mini-mlops-trainer:${V}" --push apps/trainer
+  --tag "ghcr.io/${GHCR_USER}/mini-mlops-trainer:${V}" --push -f apps/trainer/Dockerfile apps
 
 # MLflow サーバー（公式イメージ + boto3。タグは MLflow の版）
 docker buildx build --platform "$PLATFORM" --tag "ghcr.io/${GHCR_USER}/mini-mlops-mlflow:3.18.0" --push apps/mlflow-server

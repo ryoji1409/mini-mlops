@@ -7,4 +7,4 @@
 # 生成器のバージョン。metadata.json に記録して「どの版の生成器で作ったか」を追えるようにする。
 # pyproject.toml の version と揃えること。
 GENERATOR_NAME = "mcap-generator"
-GENERATOR_VERSION = "0.1.0"
+GENERATOR_VERSION = "0.2.0"

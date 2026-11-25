@@ -1,0 +1,23 @@
+[project]
+name = "navi-raster"
+version = "0.1.0"
+description = "予定ルート（緯度経度の点列）と現在位置・向きから、自分中心・進行方向が上の経路ラスタ画像（既定 128x128、0.5 m/px）を描くライブラリ。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# 学習器（apps/trainer、Ray イメージ）と同じ版に揃える
+dependencies = [
+    "numpy==2.2.6",
+    "pillow==13.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

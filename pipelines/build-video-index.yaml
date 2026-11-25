@@ -1,0 +1,117 @@
+# 動画入り MCAP の GOP 索引とセグメントのタグ付け（フェーズ 5）。
+#
+#   1. build-index … raw の動画入り MCAP ごとに、footer と summary だけを Range GET で読み、
+#                    GOP ごとの「MCAP 参照位置」を s3://derived/index/gops/ に、予定ルートを s3://derived/index/routes/ に書く。
+#                    同じ MCAP（sha256）で作成済みならスキップ。読んだバイト数を MCAP 全体のサイズと並べてログに出す
+#   2. tag         … raw のフレームごとの正解値（ground_truth.parquet）を DuckDB でセグメント（10 秒）ごとに集計し、
+#                    タグを付けて s3://derived/tags/segments.parquet に書く（毎回全体を作り直す）
+# どちらも batch/v1 Job にして、Kueue の data-processing キューを通す（変換・データセット作成と同じ枠を順番に使う）。
+#
+# 実行:  argo submit -n mlops --from workflowtemplate/build-video-index --watch
+# 登録:  docs/setup/05-video-index.md の手順（OWNER を GitHub のユーザー名に置き換えて kubectl apply）
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: build-video-index
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  entrypoint: main
+  serviceAccountName: curate-pipeline
+  imagePullSecrets:
+    - name: ghcr-pull
+  arguments:
+    parameters:
+      - name: force
+        value: "false"
+        enum: ["false", "true"]
+        description: true なら作成済みの索引も作り直す
+      - name: verify-gops
+        value: "1"
+        description: 参照位置の確認のために、セッションごとに実際に読んでみる GOP の数（0〜3）
+      - name: priority
+        value: low
+        enum: ["low", "high"]
+      # イメージ。タグは apps/indexer/pyproject.toml の version（OWNER は登録するときに GitHub のユーザー名に置き換える）
+      - name: indexer-image
+        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.0
+  activeDeadlineSeconds: 7200
+  ttlStrategy:
+    secondsAfterCompletion: 604800
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 10m
+  # 索引を同時に 2 つ作らないようにする（同じファイルを書き合わないように）
+  synchronization:
+    mutexes:
+      - name: video-index
+
+  templates:
+    - name: main
+      steps:
+        - - name: build-index
+            template: indexer-job
+            arguments:
+              parameters:
+                - name: step
+                  value: index
+                - name: args
+                  value: '["build-index", "--verify-gops={{workflow.parameters.verify-gops}}", "--force={{workflow.parameters.force}}"]'
+        - - name: tag
+            template: indexer-job
+            arguments:
+              parameters:
+                - name: step
+                  value: tag
+                - name: args
+                  value: '["tag"]'
+
+    # indexer のコマンドを batch/v1 Job（Kueue の data-processing キュー経由）として動かす
+    - name: indexer-job
+      inputs:
+        parameters:
+          - name: step
+          - name: args
+      resource:
+        action: create
+        setOwnerReference: true
+        successCondition: status.succeeded > 0
+        failureCondition: status.failed > 0
+        manifest: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "{{workflow.name}}-{{inputs.parameters.step}}"
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              app.kubernetes.io/component: indexer
+              kueue.x-k8s.io/queue-name: data-processing
+              kueue.x-k8s.io/priority-class: "{{workflow.parameters.priority}}"
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 3600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/part-of: mini-mlops
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                imagePullSecrets:
+                  - name: ghcr-pull
+                containers:
+                  - name: indexer
+                    image: "{{workflow.parameters.indexer-image}}"
+                    command: [indexer]
+                    args: {{inputs.parameters.args}}
+                    envFrom:
+                      - configMapRef: { name: pipeline-s3 }
+                      - secretRef: { name: pipeline-s3-credentials }
+                    env:
+                      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                        value: when_required
+                    # summary（数十 KB）と正解値の Parquet（セッションごとに数 KB）しか持たないので小さくてよい
+                    resources:
+                      requests: { cpu: 200m, memory: 256Mi }
+                      limits: { cpu: "1", memory: 768Mi }

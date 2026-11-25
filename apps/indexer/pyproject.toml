@@ -1,0 +1,39 @@
+[project]
+name = "indexer"
+version = "0.1.0"
+description = "動画入り MCAP の GOP 索引（MCAP の summary だけを Range GET で読む）、セグメントのタグ付け、DuckDB の SQL による選別とサンプル一覧（manifest）の作成。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# バージョンは固定する。学習器（apps/trainer）からも使う（Range GET・チャンクの解析）ので、
+# 学習器と同じ版（Ray イメージに入っている版）に揃えている
+dependencies = [
+    "duckdb==1.5.6",
+    "mcap==1.6.0",
+    "protobuf==6.33.6",
+    "pyarrow==23.0.1",
+]
+
+[project.scripts]
+# `indexer build-index|tag|select|count-truth` で CLI を起動できるようにする
+indexer = "indexer.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    # テストで GOP をデコードできるか確かめるため（学習器と同じ版）
+    "av==19.0.2",
+    "pytest==9.2.0",
+]
+
+[tool.uv]
+# 学習器（Ray イメージ）と揃える間接依存
+constraint-dependencies = [
+    "lz4==4.4.5",
+    "zstandard==0.23.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

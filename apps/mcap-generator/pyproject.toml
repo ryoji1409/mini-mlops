@@ -1,17 +1,21 @@
 [project]
 name = "mcap-generator"
-version = "0.1.0"
-description = "合成 MCAP（カメラ / IMU / GNSS）と metadata.json を生成する。ホスト（クラスタの外の作業用マシン）で実行する。"
+version = "0.2.0"
+description = "合成 MCAP（カメラ / IMU / GNSS、任意で H.265 の動画と経路）と metadata.json・正解値を生成する。ホスト（クラスタの外の作業用マシン）で実行する。"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 # バージョンは固定する（実際に入る版は uv.lock で完全に固定される）
 dependencies = [
+    # H.265 のエンコード（libx265 入りの FFmpeg を同梱。同梱物のライセンスは GPL を含む。docs/architecture.md）
+    "av==19.0.2",
     "foxglove-schemas-protobuf==0.4.0",
     "mcap==1.6.0",
     "mcap-protobuf-support==0.6.0",
     "numpy==2.5.4",
     "pillow==13.0.0",
     "protobuf==7.36.2",
+    # フレームごとの正解値（ground_truth.parquet）の書き出し
+    "pyarrow==23.0.1",
 ]
 
 [project.scripts]

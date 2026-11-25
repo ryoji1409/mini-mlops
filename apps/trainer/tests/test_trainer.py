@@ -25,6 +25,10 @@ def _env() -> dict[str, str]:
     env.pop("MLFLOW_TRACKING_URI", None)  # テストでは MLflow に記録しない
     env["OMP_NUM_THREADS"] = "1"
     env["MLFLOW_DISABLE_AGENT_HINT"] = "1"
+    # `uv run` の中で Ray を起動すると、Ray はワーカーでも uv run をやり直す（作業ディレクトリを一時的な場所に複製して）。
+    # 複製先では pyproject.toml の ../indexer などの相対パスが解決できず、ワーカーが起動しないので、この動きを止める。
+    # 学習器の Python 環境はもう揃っているので、ワーカーは同じ Python をそのまま使えばよい
+    env["RAY_ENABLE_UV_RUN_RUNTIME_ENV"] = "0"
     return env
 
 

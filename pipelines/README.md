@@ -9,6 +9,8 @@
 |---|---|---|
 | `mcap-convert` | raw の MCAP を Ray Data で derived に変換し、DuckDB で検証する。RayJob は Kueue のキュー経由で動く | 2（3 で Kueue 経由に） |
 | `train-scene-classifier` | データセットを作り（curated）、シーン分類を分散学習し（TrainJob か RayJob）、閾値を超えたら MLflow に登録する | 4 |
+| `build-video-index` | 動画入り MCAP の GOP 索引（summary だけを Range GET）と、セグメントのタグ付け | 5 |
+| `select-and-curate` | 選別の SQL でセグメントを選び、サンプル一覧（manifest）とシャードを curated に作る | 5 |
 
 ### train-scene-classifier の流れ
 
@@ -38,6 +40,27 @@ build-dataset ──▶ train（engine で選ぶ）─────────�
 - **データセット作成も Kueue を通す**: Argo のステップの Pod は Kueue を通らないので、batch/v1 Job の形にして data-processing キューに入れる。
   同じバージョンを 2 つのワークフローが同時に作らないよう、mutex（`scene-dataset-v<N>`）を付けている。
 - **片付け**: TrainJob / RayJob は別の Namespace（training）なので ownerReference を付けられず、ワークフローを消しても残る（04-training.md の片付け）。
+
+### build-video-index / select-and-curate の流れ（フェーズ 5）
+
+```
+build-video-index:  build-index ──▶ tag            select-and-curate:  select
+                    batch/v1 Job     batch/v1 Job                       batch/v1 Job
+                    （どれも data-processing キュー経由、SA curate-pipeline、イメージ mini-mlops-indexer）
+```
+
+| パラメータ | 既定 | 意味 |
+|---|---|---|
+| `force`（build-video-index） | `false` | `true` なら作成済みの索引も作り直す |
+| `verify-gops`（build-video-index） | `1` | 参照位置の確認のために、セッションごとに実際に読む GOP の数 |
+| `dataset` / `version`（select-and-curate） | `night-rain` / `1` | 出力先 `s3://curated/<dataset>/v<version>/`。同じ中身ならスキップ、違う中身ならエラー |
+| `sql` | `night_rain` | 選別の SQL（`apps/indexer/src/indexer/sql/<名前>.sql`。イメージに入っているもの） |
+| `frames` / `seed` | `first` / `0` | GOP のどのフレームをサンプルにするか（`first` / `random` / `all`） |
+| `gops-per-shard` | `50` | シャード 1 つあたりの GOP の数 |
+| `segment-ids-uri` | 空 | 外から渡す segment_id の一覧（Parquet）。SQL から `candidates` という表で使える |
+
+- 索引は同時に 2 つ作らない（mutex `video-index`）。選別は同じデータセット・バージョンで mutex
+- 手順は [docs/setup/05-video-index.md](../docs/setup/05-video-index.md)
 
 ### mcap-convert の流れ
 
@@ -107,6 +130,11 @@ argo submit -n mlops --from workflowtemplate/mcap-convert -p device-id=dev-011 -
 sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" pipelines/train-scene-classifier.yaml | kubectl apply -f -
 argo submit -n mlops --from workflowtemplate/train-scene-classifier -p engine=trainjob -p workers=2 --watch
 argo submit -n mlops --from workflowtemplate/train-scene-classifier -p engine=rayjob --watch
+
+# 動画の索引・選別（フェーズ 5）
+for f in build-video-index select-and-curate; do sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" "pipelines/$f.yaml" | kubectl apply -f -; done
+argo submit -n mlops --from workflowtemplate/build-video-index --watch
+argo submit -n mlops --from workflowtemplate/select-and-curate -p dataset=night-rain -p version=1 -p sql=night_rain --watch
 ```
 
 ## 動作確認コマンド

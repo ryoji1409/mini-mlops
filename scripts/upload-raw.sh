@@ -7,6 +7,7 @@
 # 置き場所（キー）は metadata.json の内容から決める:
 #   s3://$RAW_BUCKET/device=<device_id>/date=<開始日(UTC)>/session_id=<session_id>/<session_id>.mcap
 #   s3://$RAW_BUCKET/device=<device_id>/date=<開始日(UTC)>/session_id=<session_id>/metadata.json
+#   （metadata.json に sidecars があれば、その付属ファイルも同じ場所に。フェーズ 5 の ground_truth.parquet など）
 #
 # 冪等性（何度実行しても同じ結果になる）の仕組み:
 #   - アップロード時に、オブジェクトのユーザーメタデータ x-amz-meta-sha256 に sha256 を付ける
@@ -96,6 +97,11 @@ upload_session() {
   }
 
   upload_object "$dir/$name" "$prefix/$name" application/octet-stream || return 1
+  # 付属ファイルも metadata.json より先に置く（metadata.json があれば全部揃っている、という約束を守る）
+  local sc_name sc_size sc_sha
+  while IFS=$'\t' read -r sc_name sc_size sc_sha; do
+    upload_object "$dir/$sc_name" "$prefix/$sc_name" application/octet-stream || return 1
+  done < <(json_sidecars "$meta")
   upload_object "$meta" "$prefix/metadata.json" application/json || return 1
 }
 

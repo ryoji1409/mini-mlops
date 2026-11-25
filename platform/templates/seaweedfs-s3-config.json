@@ -25,6 +25,8 @@
         { "accessKey": "${TRAINING_AWS_ACCESS_KEY_ID}", "secretKey": "${TRAINING_AWS_SECRET_ACCESS_KEY}" }
       ],
       "actions": [
+        "Read:raw", "List:raw",
+        "Read:derived", "List:derived",
         "Read:curated", "Write:curated", "List:curated"
       ]
     },

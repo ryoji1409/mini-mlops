@@ -3,7 +3,19 @@
 出力先のディレクトリ構成は、S3 の raw ゾーンと同じパーティション形式にする:
     <out>/device=<id>/date=<YYYY-MM-DD>/session_id=<id>/<session_id>.mcap
     <out>/device=<id>/date=<YYYY-MM-DD>/session_id=<id>/metadata.json
+    <out>/device=<id>/date=<YYYY-MM-DD>/session_id=<id>/ground_truth.parquet   （--video のときだけ）
 こうしておくと、アップロード時のキーとローカルのパスが一目で対応する。
+
+--video のときは、次も書く（フェーズ 5: 動画の索引・選別・高速な読み出し）:
+- /camera/front/compressed_video: H.265 の動画（10Hz、GOP 1 秒）。video.py
+- /navigation/route: 予定ルート（記録の先頭に 1 回）。route.py
+- MCAP のチャンクを GOP の先頭で区切る（1 チャンク = 1 秒 = 1 GOP）。
+  索引（apps/indexer）は「チャンクの開始位置と長さ」を GOP の参照位置として記録し、
+  データローダはその範囲だけを S3 の Range GET で取ってデコードする。
+  チャンクは zstd で丸ごと圧縮されるので、取り出せる最小の単位はチャンク 1 つ。
+  GOP の先頭でチャンクを区切っておけば、「1 回の Range GET = ちょうど 1 GOP」になり、
+  前後の GOP のデータを余分に取らずに済む（同じ 1 秒の IMU / GNSS / JPEG は同じチャンクに同居する）。
+  予定ルートは先頭の小さなチャンクに単独で入れる
 """
 
 import hashlib
@@ -18,16 +30,21 @@ from typing import Any
 
 import numpy as np
 from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+from foxglove_schemas_protobuf.CompressedVideo_pb2 import CompressedVideo
 from foxglove_schemas_protobuf.LocationFix_pb2 import LocationFix
+from foxglove_schemas_protobuf.LocationFixes_pb2 import LocationFixes
 from google.protobuf.message import Message
 from mcap.writer import CompressionType
 from mcap_protobuf.writer import Writer
 from PIL import Image
 
 from . import GENERATOR_NAME, GENERATOR_VERSION
+from .ground_truth import FRAMES_PER_SEGMENT, GROUND_TRUTH_FILE, SEGMENT_LENGTH_S, GroundTruthTable
 from .imu_schema import Imu
+from .route import ROUTE_SPACING_M, make_route
 from .scenario import SessionScenario
-from .scene import HEIGHT, WIDTH, make_layout, render_frame
+from .scene import HEIGHT, WIDTH, frame_truth, make_layout, render_frame
+from .video import GOP_LENGTH, VIDEO_HEIGHT, VIDEO_RATE_HZ, VIDEO_WIDTH, H265Encoder
 from .sensors import (
     BASE_RATE_HZ,
     DT_S,
@@ -40,7 +57,9 @@ from .sensors import (
 )
 
 # metadata.json の形式のバージョン。項目を変えたら上げる（後段の処理が形式を判別できるように）
+# 2: --video のとき、video / segments / sidecars（付属ファイル）の項目が増える
 METADATA_SCHEMA_VERSION = 1
+METADATA_SCHEMA_VERSION_VIDEO = 2
 
 
 @dataclass(frozen=True)
@@ -62,6 +81,13 @@ CAMERA = TopicSpec("/camera/front/image_compressed", "foxglove.CompressedImage",
 IMU = TopicSpec("/imu", "mini_mlops.Imu", 100, "imu")
 GNSS = TopicSpec("/gnss", "foxglove.LocationFix", 10, "gnss")
 TOPICS: tuple[TopicSpec, ...] = (CAMERA, IMU, GNSS)
+VIDEO = TopicSpec("/camera/front/compressed_video", "foxglove.CompressedVideo", VIDEO_RATE_HZ, "camera_front")
+# 予定ルートは記録の先頭に 1 回だけ出す（rate_hz=0 は「定期的には出さない」の意味）
+ROUTE = TopicSpec("/navigation/route", "foxglove.LocationFixes", 0, "map")
+VIDEO_TOPICS: tuple[TopicSpec, ...] = (CAMERA, VIDEO, IMU, GNSS, ROUTE)
+
+# --video のときのチャンクの上限サイズ。GOP の先頭で自分で区切るので、自動では区切られないよう十分大きくする
+VIDEO_CHUNK_SIZE = 64 * 1024 * 1024
 
 JPEG_QUALITY = 85
 
@@ -96,6 +122,20 @@ def _imu_message(t_ns: int, sample: ImuSample) -> Message:
     return msg
 
 
+def _video_message(t_ns: int, data: bytes) -> CompressedVideo:
+    msg = CompressedVideo(frame_id=VIDEO.frame_id, data=data, format="h265")
+    msg.timestamp.FromNanoseconds(t_ns)
+    return msg
+
+
+def _route_message(t_ns: int, points: list[tuple[float, float]]) -> LocationFixes:
+    msg = LocationFixes()
+    for lat, lon in points:
+        fix = msg.fixes.add(frame_id=ROUTE.frame_id, latitude=lat, longitude=lon)
+        fix.timestamp.FromNanoseconds(t_ns)
+    return msg
+
+
 def _gnss_message(t_ns: int, sample: GnssSample) -> LocationFix:
     var = sample.sigma_m**2
     msg = LocationFix(
@@ -127,10 +167,11 @@ def _device_index(device_id: str) -> int:
     return int(device_id.rsplit("-", 1)[1]) - 1
 
 
-def _write_messages(writer: Writer, scenario: SessionScenario) -> Counter[str]:
+def _write_messages(writer: Writer, scenario: SessionScenario, video: bool = False) -> tuple[Counter[str], GroundTruthTable | None]:
     """100Hz の刻みで時刻を進めながら、各トピックのメッセージを時刻順に書き込む。
 
-    戻り値はトピックごとのメッセージ数（metadata.json に書く）。
+    戻り値はトピックごとのメッセージ数（metadata.json に書く）と、video のときはフレームごとの正解値。
+    video=False のときは、フェーズ 1 からの出力と 1 バイトも変わらない（描画の回数・乱数の使い方を変えない）。
     """
     # 用途ごとに乱数の流れを分ける。こうすると、例えば画像の描き方を変えても
     # IMU / GNSS の値は変わらない（変更の影響範囲が分かりやすい）。
@@ -145,11 +186,34 @@ def _write_messages(writer: Writer, scenario: SessionScenario) -> Counter[str]:
 
     counts: Counter[str] = Counter()
     tick_ns = 1_000_000_000 // BASE_RATE_HZ  # 10ms。整数のナノ秒で扱い、小数の誤差をためない
+    encoder = H265Encoder() if video else None
+    truth = GroundTruthTable(scenario.session_id, scenario.time_of_day, scenario.weather) if video else None
 
     for i in range(len(traj)):
         t_ns = scenario.start_time_ns + i * tick_ns
-        if i % CAMERA.every_n_ticks == 0:
+        img = None
+        if encoder is not None and truth is not None and i % VIDEO.every_n_ticks == 0:
+            frame_index = i // VIDEO.every_n_ticks
+            if i == 0:
+                # 予定ルートは先頭に 1 回。直後の flush で「ルートだけのチャンク」になるので、
+                # 索引作成はルートを取り出すときに GOP のデータを読まずに済む
+                writer.write_message(ROUTE.topic, _route_message(t_ns, make_route(traj)), log_time=t_ns, publish_time=t_ns)
+                counts[ROUTE.topic] += 1
+            if frame_index % GOP_LENGTH == 0:
+                # GOP の先頭（IDR）を書く直前に、作りかけのチャンクを閉じる → 1 チャンク = 1 GOP になる。
+                # mcap_protobuf の Writer は中に mcap の Writer（_writer）を持っていて、その flush() が
+                # 「作りかけのチャンクを閉じて書き出す」公開のメソッド（mcap 1.6.0）
+                writer._writer.flush()
             img = render_frame(scenario, layout, i * DT_S, float(travelled[i]), rng_rain)
+            data, is_key = encoder.encode(img)
+            if is_key != (frame_index % GOP_LENGTH == 0):
+                raise RuntimeError(f"フレーム {frame_index}: IDR の位置が GOP の先頭とずれています")
+            writer.write_message(VIDEO.topic, _video_message(t_ns, data), log_time=t_ns, publish_time=t_ns)
+            counts[VIDEO.topic] += 1
+            truth.add(frame_index, t_ns, frame_truth(layout, i * DT_S, float(travelled[i])))
+        if i % CAMERA.every_n_ticks == 0:
+            if img is None:  # video のときは動画用に描いた画像をそのまま使う（同じ時刻なので同じ絵）
+                img = render_frame(scenario, layout, i * DT_S, float(travelled[i]), rng_rain)
             writer.write_message(CAMERA.topic, _camera_message(t_ns, _encode_jpeg(img)), log_time=t_ns, publish_time=t_ns)
             counts[CAMERA.topic] += 1
         if i % IMU.every_n_ticks == 0:
@@ -158,7 +222,9 @@ def _write_messages(writer: Writer, scenario: SessionScenario) -> Counter[str]:
         if i % GNSS.every_n_ticks == 0:
             writer.write_message(GNSS.topic, _gnss_message(t_ns, gnss_sample(traj, i, rng_gnss)), log_time=t_ns, publish_time=t_ns)
             counts[GNSS.topic] += 1
-    return counts
+    if encoder is not None:
+        encoder.close()
+    return counts, truth
 
 
 def sha256_of(path: Path) -> str:
@@ -170,10 +236,14 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def _build_metadata(scenario: SessionScenario, counts: Counter[str], mcap_path: Path, seed: int) -> dict[str, Any]:
+def _build_metadata(
+    scenario: SessionScenario, counts: Counter[str], mcap_path: Path, seed: int, sidecars: list[Path] | None = None
+) -> dict[str, Any]:
     """metadata.json の中身を作る。時間帯・天候などは後のフェーズで「正解ラベル」として使う。"""
-    return {
-        "schema_version": METADATA_SCHEMA_VERSION,
+    video = sidecars is not None
+    topics = VIDEO_TOPICS if video else TOPICS
+    meta: dict[str, Any] = {
+        "schema_version": METADATA_SCHEMA_VERSION_VIDEO if video else METADATA_SCHEMA_VERSION,
         "device_id": scenario.device_id,
         "session_id": scenario.session_id,
         "start_time": _iso_from_ns(scenario.start_time_ns),
@@ -195,7 +265,7 @@ def _build_metadata(scenario: SessionScenario, counts: Counter[str], mcap_path: 
                 "rate_hz": spec.rate_hz,
                 "message_count": counts[spec.topic],
             }
-            for spec in TOPICS
+            for spec in topics
         ],
         "camera": {"width": WIDTH, "height": HEIGHT, "format": "jpeg"},
         "file": {
@@ -206,6 +276,22 @@ def _build_metadata(scenario: SessionScenario, counts: Counter[str], mcap_path: 
         },
         "generator": {"name": GENERATOR_NAME, "version": GENERATOR_VERSION, "seed": seed, "session_seed": scenario.seed},
     }
+    if video:
+        meta["video"] = {
+            "topic": VIDEO.topic,
+            "format": "h265",
+            "width": VIDEO_WIDTH,
+            "height": VIDEO_HEIGHT,
+            "rate_hz": VIDEO_RATE_HZ,
+            "gop_length": GOP_LENGTH,
+            "b_frames": 0,
+            "chunk_per_gop": True,
+        }
+        meta["route"] = {"topic": ROUTE.topic, "spacing_m": ROUTE_SPACING_M}
+        meta["segments"] = {"length_s": SEGMENT_LENGTH_S, "frames_per_segment": FRAMES_PER_SEGMENT, "count": -(-counts[VIDEO.topic] // FRAMES_PER_SEGMENT)}
+        # 付属ファイル（MCAP と一緒にアップロードする）。アップロードと検証は sha256 で照合する
+        meta["sidecars"] = [{"name": p.name, "size_bytes": p.stat().st_size, "sha256": sha256_of(p)} for p in sidecars or []]
+    return meta
 
 
 def _iso_from_ns(t_ns: int) -> str:
@@ -225,8 +311,8 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def write_session(scenario: SessionScenario, out_root: Path, seed: int) -> dict[str, Any]:
-    """1 セッション分の MCAP と metadata.json を書き出し、metadata の中身を返す。"""
+def write_session(scenario: SessionScenario, out_root: Path, seed: int, video: bool = False) -> dict[str, Any]:
+    """1 セッション分の MCAP と metadata.json（video のときは ground_truth.parquet も）を書き出し、metadata の中身を返す。"""
     session_dir = out_root / partition_dir(scenario)
     session_dir.mkdir(parents=True, exist_ok=True)
     mcap_path = session_dir / f"{scenario.session_id}.mcap"
@@ -235,12 +321,20 @@ def write_session(scenario: SessionScenario, out_root: Path, seed: int) -> dict[
     # MCAP は一時ファイルに書き、最後まで書けたら本来の名前に変える
     with tmp_path.open("wb") as f:
         # チャンク（メッセージのまとまり）を zstd で圧縮する。チャンクサイズは 1MB
-        writer = Writer(f, chunk_size=1024 * 1024, compression=CompressionType.ZSTD)
-        counts = _write_messages(writer, scenario)
+        # （video のときは GOP の先頭で自分で区切るので、上限は十分大きくする）
+        writer = Writer(f, chunk_size=VIDEO_CHUNK_SIZE if video else 1024 * 1024, compression=CompressionType.ZSTD)
+        counts, truth = _write_messages(writer, scenario, video)
         writer.finish()
     os.replace(tmp_path, mcap_path)
 
-    metadata = _build_metadata(scenario, counts, mcap_path, seed)
+    sidecars = None
+    if truth is not None:
+        gt_path = session_dir / GROUND_TRUTH_FILE
+        gt_tmp = session_dir / f".{GROUND_TRUTH_FILE}.tmp"
+        truth.write(gt_tmp)
+        os.replace(gt_tmp, gt_path)
+        sidecars = [gt_path]
+    metadata = _build_metadata(scenario, counts, mcap_path, seed, sidecars)
     _atomic_write_bytes(
         session_dir / "metadata.json",
         (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),

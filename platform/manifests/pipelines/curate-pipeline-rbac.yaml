@@ -1,0 +1,36 @@
+# 動画の索引・選別のワークフロー（build-video-index / select-and-curate、フェーズ 5）の Pod が使う ServiceAccount と権限。
+# 学習のワークフロー（train-pipeline-rbac.yaml）と同じく、Kueue 経由の Job を作って見張るだけ。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: curate-pipeline
+  namespace: mlops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: curate-pipeline
+  namespace: mlops
+rules:
+  # Argo の executor が、ステップの結果（出力パラメータなど）を書き込むのに必要
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+  # 索引・タグ付け・選別の Job（batch/v1、Kueue の data-processing キュー経由）を作り、状態を見張るのに必要
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: curate-pipeline
+  namespace: mlops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: curate-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: curate-pipeline
+    namespace: mlops

@@ -1,0 +1,23 @@
+# 用語集
+
+フェーズ 5（動画の索引・データの選別・高速な読み出し）で出てくる用語と、それを扱っているファイル。
+
+| 用語 | 意味 | 対応するファイル |
+|---|---|---|
+| H.265（HEVC） | 動画の圧縮方式。前のフレームとの差分だけを持つことで小さくする。このリポジトリでは 320×180・10Hz・B フレームなし | [apps/mcap-generator/src/mcap_generator/video.py](../apps/mcap-generator/src/mcap_generator/video.py)（エンコード）、[apps/trainer/src/trainer/video_decoder.py](../apps/trainer/src/trainer/video_decoder.py)（デコード） |
+| NVDEC | GPU に載っている動画デコード専用の回路。この環境（CPU のみ）では PyAV（FFmpeg のソフトウェアデコーダ）で代わりにデコードする。デコーダは差し替えられる形にしてある | [apps/trainer/src/trainer/video_decoder.py](../apps/trainer/src/trainer/video_decoder.py)（`VideoDecoder` / `PyAVDecoder`） |
+| GOP（Group of Pictures） | 単独でデコードできるフレーム（IDR）から、次の IDR の手前までのまとまり。ここでは 10 フレーム = 1 秒。GOP の途中のフレームは、先頭から順にデコードしないと得られない | [video.py](../apps/mcap-generator/src/mcap_generator/video.py)（`GOP_LENGTH`、x265 の設定） |
+| GOP 先頭（IDR） | GOP の最初のフレーム。前のフレームを参照しないので、ここからデコードを始められる。各 IDR に復号の設定（VPS / SPS / PPS）を付けて、途中の GOP だけでもデコードできるようにしている | [video.py](../apps/mcap-generator/src/mcap_generator/video.py)（`repeat-headers=1`）、[apps/indexer/src/indexer/build_index.py](../apps/indexer/src/indexer/build_index.py)（`_verify_gops` で確認） |
+| MCAP 参照位置 | ある GOP が MCAP ファイルのどこにあるか。ここでは「チャンクの開始オフセット（`chunk_offset`）と長さ（`chunk_length`）」。生成器が 1 チャンク = 1 GOP にしているので、この範囲だけを読めば GOP が取り出せる | [apps/indexer/src/indexer/build_index.py](../apps/indexer/src/indexer/build_index.py)（`GOP_SCHEMA`）、[apps/indexer/src/indexer/mcap_chunks.py](../apps/indexer/src/indexer/mcap_chunks.py)（`parse_chunk`）、`s3://derived/index/gops/` |
+| Parquet | 列ごとにまとめて保存する表のファイル形式。必要な列だけ読める。索引・タグ・正解値・サンプル一覧はすべて Parquet | `s3://derived/index/`、`s3://derived/tags/`、`s3://raw/…/ground_truth.parquet`、`s3://curated/<名前>/v<N>/shards/` |
+| セグメント ID | セッションを 10 秒ごとに区切った単位の名前。`<session_id>_<連番 3 桁>`（例: `dev-031-20261106T141513Z_000`）。タグ付け・選別・検索（フェーズ 6）の単位 | [apps/mcap-generator/src/mcap_generator/ground_truth.py](../apps/mcap-generator/src/mcap_generator/ground_truth.py)（`segment_id`）、[build_index.py](../apps/indexer/src/indexer/build_index.py)（索引にも同じ ID を付ける） |
+| タグ付け | フレームごとの正解値をセグメントごとに集計し（最大値・平均値・1 回でも写ったか）、`night`・`rain`・`small_objects` などのタグを付けること | [apps/indexer/src/indexer/sql/tag_segments.sql](../apps/indexer/src/indexer/sql/tag_segments.sql)、[apps/indexer/src/indexer/tag.py](../apps/indexer/src/indexer/tag.py)、`s3://derived/tags/segments.parquet` |
+| 選別 | 条件（SQL）に合うセグメントを選ぶこと。条件は SQL ファイルに書き、DuckDB で実行する | [apps/indexer/src/indexer/sql/](../apps/indexer/src/indexer/sql/)（`night_rain.sql` など）、[apps/indexer/src/indexer/select.py](../apps/indexer/src/indexer/select.py) |
+| シャード | 大きな一覧やデータを、扱いやすい大きさに分けた 1 つ 1 つのファイル。サンプル一覧は GOP 50 個ごとに分け、1 つの GOP が 2 つのシャードにまたがらないようにしている。分散学習のワーカーはシャード単位で分担する | [select.py](../apps/indexer/src/indexer/select.py)（`_shards`）、[apps/trainer/src/trainer/video_dataset.py](../apps/trainer/src/trainer/video_dataset.py)（`_my_shards`） |
+| マニフェスト（サンプル一覧） | 選別の結果。`manifest.json`（選別の SQL・件数・中身のハッシュ・シャードの一覧）と、シャードの Parquet（1 行 = 1 サンプル: segment_id + GOP の参照位置 + GOP 内のフレーム番号 + 正解値）| [select.py](../apps/indexer/src/indexer/select.py)、`s3://curated/<名前>/v<N>/manifest.json` |
+| S3 Range GET | S3 の GET に `Range: bytes=開始-終了` を付けて、ファイルの一部だけを取り出すこと。MCAP を丸ごとダウンロードせず、summary や 1 GOP 分のチャンクだけを読むのに使う。読んだバイト数を数えてログに出す | [apps/indexer/src/indexer/rangefile.py](../apps/indexer/src/indexer/rangefile.py)（`RangeReader`、`ReadStats`） |
+| 先読み（prefetch） | 学習側がいまのサンプルを使っている間に、先の GOP の読み出しとデコードを別スレッドで進めておくこと。S3 の応答待ちを隠す | [video_dataset.py](../apps/trainer/src/trainer/video_dataset.py)（`prefetch`）、[apps/trainer/src/trainer/bench_video.py](../apps/trainer/src/trainer/bench_video.py)（効果の計測） |
+| 経路ラスタ（route raster） | 予定ルートを、自分中心・進行方向が上の画像（128×128 px、0.5 m/px）に描いたもの。これから進む部分を白、通り過ぎた部分を灰色で描く。サンプルごとにその場で描く | [apps/navi-raster/src/navi_raster/render.py](../apps/navi-raster/src/navi_raster/render.py)、[pose.py](../apps/navi-raster/src/navi_raster/pose.py)（位置と向きの推定）、`s3://derived/index/routes/`（予定ルート） |
+| 正解値（Ground truth） | 学習・評価の基準になる「本当の値」。ここでは生成器が知っている真値（時間帯・天候・近くの小物体の数・進路上の大物体の数）をフレームごとに記録している | [apps/mcap-generator/src/mcap_generator/scene.py](../apps/mcap-generator/src/mcap_generator/scene.py)（`frame_truth`）、[ground_truth.py](../apps/mcap-generator/src/mcap_generator/ground_truth.py)、[apps/indexer/src/indexer/truth.py](../apps/indexer/src/indexer/truth.py)（選別結果の照合） |
+| チャンク（MCAP） | MCAP の中で、メッセージをまとめて zstd で圧縮した単位。圧縮されているので、取り出せる最小の単位はチャンク 1 つ | [apps/mcap-generator/src/mcap_generator/writer.py](../apps/mcap-generator/src/mcap_generator/writer.py)（GOP の先頭で `flush()`）、[docs/architecture.md](architecture.md)「1 チャンク = 1 GOP」 |
+| summary / footer（MCAP） | MCAP の末尾にある索引の部分。footer に summary の開始位置、summary にスキーマ・チャンネル・チャンクの索引がある。ここだけ読めば中身を読まずに位置が分かる | [mcap_chunks.py](../apps/indexer/src/indexer/mcap_chunks.py)（`read_summary`） |

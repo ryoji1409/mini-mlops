@@ -63,3 +63,13 @@ for key in sys.argv[2].split("."):
 print(value)
 ' "$1" "$2"
 }
+
+# metadata.json の sidecars（MCAP と一緒に置く付属ファイル。フェーズ 5 の ground_truth.parquet など）を
+# 「名前 TAB サイズ TAB sha256」の形で 1 行ずつ出す。無ければ何も出さない
+json_sidecars() {
+  python3 -I -c '
+import json, sys
+for s in json.load(open(sys.argv[1])).get("sidecars", []):
+    print(s["name"], s["size_bytes"], s["sha256"], sep="\t")
+' "$1"
+}

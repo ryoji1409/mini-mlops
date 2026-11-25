@@ -8,7 +8,7 @@
 
 | スクリプト | 役割 | 使う手順 |
 |---|---|---|
-| `validate-mcap.sh` | アップロード前の検証。セッションごとに、metadata.json と MCAP の sha256・サイズ、`mcap doctor`（構造チェック）、`mcap info` と metadata.json の一致を確かめる | [01-storage.md](../docs/setup/01-storage.md) 手順 7・9 |
+| `validate-mcap.sh` | アップロード前の検証。セッションごとに、metadata.json と MCAP の sha256・サイズ、`mcap doctor`（構造チェック）、`mcap info` と metadata.json の一致、付属ファイル（`sidecars`。フェーズ 5 の `ground_truth.parquet`）のサイズと sha256 を確かめる | [01-storage.md](../docs/setup/01-storage.md) 手順 7・9 |
 | `upload-raw.sh` | 検証を通ったセッションだけを raw ゾーンにアップロードする（sha256 で重複・上書きを防ぐ。`--dry-run` あり） | [01-storage.md](../docs/setup/01-storage.md) 手順 8 |
 | `lib/make_broken_session.py` | 正常なセッションから「途中で切れた MCAP」のセッションを作る（隔離の確認と、変換器のテストで使う） | [02-pipeline.md](../docs/setup/02-pipeline.md) 手順 10 |
 | `lib/common.sh` | 上の 2 つのシェルスクリプトの共通関数（.env の読み込み、sha256、JSON の値の取り出し） | — |
@@ -25,7 +25,8 @@
 | 同じ sha256 | スキップ（何度実行しても重複しない） |
 | 違う sha256 / sha256 なし | **上書きせずエラー**（raw は正本なので、勝手に書き換えない） |
 
-MCAP を先に、`metadata.json` を最後に置くので、「metadata.json があればそのセッションは揃っている」と判断できます。
+MCAP を先に、付属ファイル（metadata.json の `sidecars` に書かれたもの。フェーズ 5 の `ground_truth.parquet`）を次に、`metadata.json` を最後に置くので、
+「metadata.json があればそのセッションは揃っている」と判断できます。
 置き場所（キー）は metadata.json の内容から決めます: `s3://raw/device=<device_id>/date=<開始日(UTC)>/session_id=<session_id>/`
 
 ## 実行手順

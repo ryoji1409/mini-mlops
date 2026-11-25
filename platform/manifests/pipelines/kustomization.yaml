@@ -11,3 +11,4 @@ resources:
   - rolebinding.yaml
   - configmap-s3.yaml
   - train-pipeline-rbac.yaml
+  - curate-pipeline-rbac.yaml

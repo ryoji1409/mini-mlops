@@ -1,6 +1,6 @@
 [project]
 name = "trainer"
-version = "0.1.1"
+version = "0.2.0"
 description = "シーン分類（時間帯・天候）の小さな CNN を、PyTorch CPU + DDP（gloo）で学習する。Kubeflow Trainer（torchrun）と Ray Train（RayJob）の両方から起動できる。"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -10,7 +10,13 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     # Ray Data が S3 / HTTP のパスを扱うときに fsspec 経由で使う（Ray イメージに入っている版）
     "aiohttp==3.14.4",
+    # 動画（H.265）のデコード（FFmpeg を同梱。フェーズ 5 の動画ローダー）
+    "av==19.0.2",
+    # GOP 索引・Range GET・チャンクの解析（フェーズ 5）。同じリポジトリのライブラリをパスで参照する
+    "indexer",
     "mlflow-skinny==3.18.0",
+    # 経路ラスタの描画（フェーズ 5）
+    "navi-raster",
     "numpy==2.2.6",
     "pillow==13.0.0",
     "protobuf==6.33.6",
@@ -37,6 +43,10 @@ dev = [
 # Linux 以外（ホストでのテスト）は PyPI の版がもともと CPU 専用なので、PyPI から入れる。
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+# 同じリポジトリのライブラリ（コンテナイメージでは apps/ をビルドの起点にして一緒にコピーする）
+# editable: ホストでは ../indexer などのソースをそのまま使う（コピーして入れると、ソースを直しても uv sync で入れ直されず古いまま残るため）
+indexer = { path = "../indexer", editable = true }
+navi-raster = { path = "../navi-raster", editable = true }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

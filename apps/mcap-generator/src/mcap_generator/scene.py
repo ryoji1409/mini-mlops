@@ -294,3 +294,29 @@ def render_frame(
     if scenario.weather == "rain":
         img = _apply_rain(img, pal, rng)
     return img
+
+
+# ---------------------------------------------------------------------------
+# 正解値（ground truth）: その時刻の画面に何が写っているか
+# ---------------------------------------------------------------------------
+
+# 「近くの小物体」とみなす前方距離 [m]（柱がこれより近ければ数える）
+SMALL_NEAR_M = 30.0
+# 「前方の大物体」とみなす前方距離 [m]（進路上 = 横位置 0 の箱が、これより近ければ数える）
+LARGE_AHEAD_M = 40.0
+
+
+@dataclass(frozen=True)
+class FrameTruth:
+    """1 フレーム分の正解値（生成時に分かっている真の値）。"""
+
+    small_objects_near: int  # 前方 SMALL_NEAR_M 以内に見えている小物体（柱）の数
+    large_objects_ahead: int  # 進路上・前方 LARGE_AHEAD_M 以内にある大物体（箱）の数
+    large_objects_visible: int  # 画面に写っている大物体の総数（進路の外も含む）
+
+
+def frame_truth(layout: SceneLayout, t_s: float, travelled_m: float) -> FrameTruth:
+    """描画と同じ計算（_pillar_dist / _box_dist）で、その時刻の物体の位置から正解値を求める。"""
+    small = sum(1 for p in layout.pillars if _pillar_dist(p, travelled_m) <= SMALL_NEAR_M)
+    ahead = sum(1 for b in layout.boxes if b.lat_m == 0.0 and _box_dist(b, t_s) <= LARGE_AHEAD_M)
+    return FrameTruth(small_objects_near=small, large_objects_ahead=ahead, large_objects_visible=len(layout.boxes))

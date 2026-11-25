@@ -5,6 +5,8 @@
     trainer register --job-name X --threshold 0.8        … 評価して、閾値を超えたらモデルを登録
     trainer trace --model-name scene-classifier --alias candidate   … 系譜をたどる
     trainer wait-trainjob --namespace training --name X   … TrainJob の完了を待つ
+    trainer bench-video --manifest-uri URI [--latency-ms 0 50] [--prefetch 0 4]   … 動画ローダーの計測（フェーズ 5）
+    trainer decode-gop --mcap-uri URI --offset N --length M   … 1 GOP だけを Range GET してデコードしてみる（フェーズ 5）
 
 学習の引数の既定値は環境変数からも渡せる（ワークフローの Pod では env で渡す）:
     DATASET_URI、CHECKPOINT_ROOT（既定 s3://curated/checkpoints）、JOB_NAME
@@ -85,6 +87,23 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--name", required=True)
     p.add_argument("--timeout-seconds", type=int, default=6 * 3600)
     p.add_argument("--interval", type=int, default=15)
+
+    p = sub.add_parser("bench-video", help="動画ローダー（Range GET + 先読み）を 1 エポック回して、速度と読んだバイト数を測る")
+    p.add_argument("--manifest-uri", required=True, help="例: s3://curated/night-rain/v1/manifest.json")
+    p.add_argument("--raw-uri", default=os.environ.get("RAW_URI", "s3://raw"), help="全 MCAP の合計サイズを数える raw ゾーン")
+    p.add_argument("--latency-ms", type=float, nargs="+", default=[0.0, 50.0], help="1 回の読み出しごとに足す人工的な遅延")
+    p.add_argument("--prefetch", type=int, nargs="+", default=[0, 4], help="先読みする GOP の数（0 = 先読みなし）")
+    p.add_argument("--decoder", default="pyav")
+    p.add_argument("--preview-dir", type=Path, help="最初の数サンプルの「カメラ画像 + 経路ラスタ」を PNG で保存する場所")
+    p.add_argument("--preview-count", type=int, default=6)
+    p.add_argument("--summary-file", type=Path, help="結果を JSON で書き出すファイル")
+
+    p = sub.add_parser("decode-gop", help="索引の参照位置（チャンクの開始位置と長さ）だけを Range GET して、GOP をデコードしてみる")
+    p.add_argument("--mcap-uri", required=True)
+    p.add_argument("--offset", type=int, required=True, help="索引の chunk_offset")
+    p.add_argument("--length", type=int, required=True, help="索引の chunk_length")
+    p.add_argument("--out-dir", type=Path, help="先頭と最後のフレームを PNG で保存する場所")
+    p.add_argument("--decoder", default="pyav")
     return parser
 
 
@@ -114,6 +133,20 @@ def main(argv: list[str] | None = None) -> int:
         from trainer.wait import wait_trainjob
 
         return wait_trainjob(args.namespace, args.name, args.timeout_seconds, args.interval)
+    if args.command == "decode-gop":
+        from trainer.video_check import decode_gop
+
+        return decode_gop(args.mcap_uri, args.offset, args.length, args.out_dir, args.decoder)
+    if args.command == "bench-video":
+        import json
+
+        from trainer.bench_video import bench, format_table
+
+        summary = bench(args.manifest_uri, args.raw_uri.rstrip("/"), args.latency_ms, args.prefetch, args.decoder, args.preview_dir, args.preview_count)
+        print(format_table(summary))
+        if args.summary_file:
+            args.summary_file.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        return 0
     return 2
 
 

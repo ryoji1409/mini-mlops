@@ -8,6 +8,7 @@
 #   1. metadata.json に書かれた MCAP ファイルが存在し、サイズと sha256 が一致する（転送中の破損・取り違えの検出）
 #   2. `mcap doctor` で構造エラーがない（途中で切れたファイルなどを検出）
 #   3. `mcap info` のトピック・メッセージ数・開始/終了時刻が metadata.json と一致する
+#   4. 付属ファイル（metadata.json の sidecars。フェーズ 5 の ground_truth.parquet など）があれば、サイズと sha256 が一致する
 # 1 つでも失敗したセッションがあれば終了コード 1 を返す。
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
@@ -44,6 +45,14 @@ validate_session() {
   local info
   info="$("$MCAP_BIN" --time-format ns info "$mcap")" || { warn "mcap info が失敗: $mcap"; return 1; }
   printf '%s\n' "$info" | python3 -I "$CHECK_INFO" "$meta" || return 1
+
+  # 4. 付属ファイル
+  local sc_name sc_size sc_sha
+  while IFS=$'\t' read -r sc_name sc_size sc_sha; do
+    [[ -f "$dir/$sc_name" ]] || { warn "付属ファイルがありません: $dir/$sc_name"; return 1; }
+    [[ "$(wc -c <"$dir/$sc_name" | tr -d ' ')" == "$sc_size" ]] || { warn "付属ファイルのサイズ不一致: $sc_name"; return 1; }
+    [[ "$(sha256_file "$dir/$sc_name")" == "$sc_sha" ]] || { warn "付属ファイルの sha256 不一致: $sc_name"; return 1; }
+  done < <(json_sidecars "$meta")
   return 0
 }
 

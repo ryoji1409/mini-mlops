@@ -13,6 +13,8 @@ curated の学習用データセット（[apps/dataset-builder](../dataset-build
 | `trainer register` | ワークフローの最後のステップ | — | — |
 | `trainer trace` | ホストから手で | — | — |
 | `trainer wait-trainjob` | ワークフローのステップ（TrainJob の完了待ち） | — | — |
+| `trainer bench-video` | ホストから手で（フェーズ 5） | 動画ローダーを 1 エポック回し、samples/sec と S3 から読んだバイト数を測る。PNG も保存 | — |
+| `trainer decode-gop` | ホストから手で（フェーズ 5） | 索引の参照位置だけを Range GET して 1 GOP をデコードしてみる | — |
 
 | ファイル | 役割 |
 |---|---|
@@ -25,6 +27,12 @@ curated の学習用データセット（[apps/dataset-builder](../dataset-build
 | `register.py` | 検証の正解率（2 つのヘッドの低いほう）が閾値を超えたら、`scene-classifier` に登録してエイリアス `candidate` を付ける |
 | `trace.py` | モデル → run → データセットのマニフェスト → derived のマニフェスト → raw の MCAP をハッシュを照合しながらたどる |
 | `wait.py` | TrainJob の `status.conditions` を見張る（Argo の成功条件ではリストの中を判定できないため） |
+| `video_dataset.py` | 動画のサンプル一覧（[apps/indexer](../indexer/README.md) の select が作る）を読む IterableDataset。GOP ごとに Range GET → デコード → 経路ラスタ（[apps/navi-raster](../navi-raster/README.md)）。先読みのスレッド数（`prefetch`）と人工的な遅延（`latency_ms`）を指定できる |
+| `video_decoder.py` | デコーダのインターフェース（`VideoDecoder`）と PyAV の実装。GPU のある環境では NVDEC の実装に差し替える |
+| `bench_video.py` / `video_check.py` | `bench-video` / `decode-gop` |
+
+0.2.0 から、同じリポジトリのライブラリ（`apps/indexer`・`apps/navi-raster`）をパスで参照しています（`pyproject.toml` の `[tool.uv.sources]`）。
+そのため **イメージのビルドの起点は `apps/`** です（`docker buildx build -f apps/trainer/Dockerfile apps`。除外は `Dockerfile.dockerignore`）。
 
 ### CPU の使いすぎを防ぐ
 
@@ -60,7 +68,7 @@ PyPI の Linux 版 torch は arm64 でも CUDA のライブラリ（数 GB）を
 ## 動作確認コマンド
 
 ```bash
-uv run pytest -q                                                                        # 期待: 4 passed
+uv run pytest -q                                                                        # 期待: 7 passed（動画ローダーの 3 件を含む。生成器を uv で別に動かす）
 MLFLOW_TRACKING_URI=http://localhost:5050 uv run trainer trace --limit 3               # 系譜（04-training.md 手順 11）
 ```
 
@@ -74,3 +82,5 @@ MLFLOW_TRACKING_URI=http://localhost:5050 uv run trainer trace --limit 3        
 | `MlflowException: If serialization_format is set to 'pt2', then input_example is required` | MLflow 3.18 の既定の保存形式。`serialization_format="pickle"` で保存している |
 | 学習が epoch の途中で止まる | DDP で rank ごとのバッチ数がずれると、多い rank が all-reduce で待ち続ける。torchrun 版は全 rank の最小に揃え、Ray 版は `drop_last=True` で揃えている |
 | `ワーカー数（N）がファイル数（M）より多い` | データセットの学習用ファイル数（既定 8）より多いワーカーでは分担できない |
+| ホストで `uv run` の中から Ray を起動すると、ワーカーが `Failed to generate package metadata for indexer @ directory+../indexer` で起動しない | Ray は `uv run` を検知すると、ワーカーでも作業ディレクトリを一時的な場所に複製して uv run をやり直す。複製先では `../indexer` が見つからない。`RAY_ENABLE_UV_RUN_RUNTIME_ENV=0` を付ける（テストは設定済み。イメージの中では uv run を使わないので起きない） |
+| `bench-video` で `AccessDenied` | training ユーザーに raw / derived の読み取りがない（[05-video-index.md](../../docs/setup/05-video-index.md) 手順 2） |
