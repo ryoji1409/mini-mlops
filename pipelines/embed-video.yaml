@@ -129,9 +129,12 @@ spec:
                       - name: OMP_NUM_THREADS
                         value: "2"
                     # 実測（CPU 2 個）: 1 フレーム約 0.23 秒、メモリの最大 約 0.9GB（重み 0.8GB を読み込んだ状態）。
-                    # data-processing の枠（2 CPU / 5.5Gi）の中に収まる
+                    # CPU の requests は 500m にする。ワーカー（2 vCPU）は Longhorn などの常駐 Pod で requests の空きが 1 CPU 未満なので、
+                    # requests 2 CPU の Pod はどのノードにも置けない（Kueue は枠の合計しか見ないので受け入れてしまい、
+                    # Pod が Pending のまま waitForPodsReady の 10 分で追い出される → 3 回で無効になる）。
+                    # limits は 2 CPU のままにして、ノードの CPU が空いていれば 2 個分使う
                     resources:
-                      requests: { cpu: "2", memory: 1536Mi }
+                      requests: { cpu: 500m, memory: 1536Mi }
                       limits: { cpu: "2", memory: 2560Mi }
                     volumeMounts:
                       - name: models

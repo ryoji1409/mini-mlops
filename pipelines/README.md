@@ -131,7 +131,7 @@ discover ──(未処理 > 0)──▶ convert（RayJob を作って待つ）�
 | **Ray 合計** | **6Gi** | 予算 6GB（Kueue は requests の合計 1.6 CPU / 4.75Gi で枠を数える） |
 | discover / validate | 1 CPU / 512Mi | 短時間だけ動く。init / wait コンテナは別に 256Mi（Argo の executor 設定） |
 | 索引・タグ付け・選別の Job | 1 CPU / 768Mi | requests 200m / 256Mi |
-| 埋め込みの Job | 2 CPU / 2560Mi | requests 2 CPU / 1536Mi。実測で 1 フレーム約 0.23 秒、メモリ最大約 0.9GB |
+| 埋め込みの Job | 2 CPU / 2560Mi | requests 500m / 1536Mi（ノードの requests の空きが 1 CPU 未満のため）。実測で 1 フレーム約 0.23 秒（CPU 2 個）、メモリ最大約 0.9GB |
 
 ## 実行手順
 

@@ -128,7 +128,7 @@ kubectl -n mlops logs "job/$WF-embed" | grep -E "ダウンロード|キャッシ
 … 読んだバイト数 160666834（1860 回）= 埋め込んだセッションの MCAP の合計 164416046 の 97.7%
 ```
 
-- 1 フレーム約 0.23 秒（CPU 2 個）なので、キーフレーム 1,800 枚で 7〜10 分かかります
+- 1 フレーム約 0.23 秒（CPU 2 個）なので、キーフレーム 1,800 枚で 7〜10 分かかります（requests は 500m なので、ノードが混んでいると CPU 1 個分ほどになり、倍くらいかかります）
 - 読んだバイト数が MCAP 全体の 98% 近いのは、全部の GOP の先頭フレームを埋め込んでいるからです。
   キーフレーム 1 枚でも、取り出せる最小の単位はチャンク（= 1 GOP、画像の JPEG なども入っている）です。
   `-p gop-stride=5`（5 秒に 1 枚）にすると、読む量も 20% 前後に減ります（手元で 19.7%）
@@ -251,6 +251,8 @@ cd ../..
 | `register-model` の送信の途中で `Connection reset` / port-forward が切れる | 大きなファイルを port-forward 越しに送っている途中で切れた。port-forward を張り直して再実行する（登録前に止まったなら、版は作られていない） |
 | 埋め込みのログに `MLflow に siglip-base-p16-224@embedding がありません` | 手順 2 の登録がまだ。または別の MLflow を見ている（ジョブは `http://mlflow.mlflow.svc:5000`） |
 | 埋め込みのログに `Invalid Host header - possible DNS rebinding attack detected` | MLflow の `--allowed-hosts` に `mlflow.mlflow.svc:5000` が入っていない（フェーズ 4 と同じ設定が必要） |
+| 埋め込みのジョブが `Suspended` のまま進まず、Argo の待つ側の Pod が `ResourceExhausted desc = EOF` で `Error` になる。`kubectl -n mlops describe workload` に `PodsReadyTimeout` / `DeactivatedDueToRequeuingLimitExceeded` | Kueue は受け入れたが、Pod を置けるノードが無く Pending のまま 10 分たって追い出され、3 回で無効になった。ワーカー（2 vCPU）の requests の空きは 1 CPU 未満なので、Pod の CPU の requests を 1 CPU 未満にする（このテンプレートは 500m）。止まったジョブを消してから流し直す |
+| ログに `[transformers] Model config: bos_token_id must be None or an integer within the vocabulary` / `eos_token_id …` | 無害。SigLIP の設定ファイルに書かれている文頭・文末のトークン ID が語彙の範囲外というだけで、埋め込みには使わない |
 | 埋め込みのジョブが `OOMKilled` | メモリの上限（2560Mi）を超えた。`kubectl -n mlops describe pod -l job-name=$WF-embed`。まとめて埋め込む枚数を減らす（テンプレートの args に `--batch-size=4`） |
 | 埋め込みのジョブの Pod が `Evicted`（ephemeral-storage） | 重みの置き場（emptyDir、上限 2Gi）が足りない、またはノードのディスクが足りない。`kubectl describe node` で空きを確認 |
 | `AccessDenied`（s3://vectors） | 手順 1 の Secret 更新と SeaweedFS の再起動がまだ |
