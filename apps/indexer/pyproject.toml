@@ -1,6 +1,6 @@
 [project]
 name = "indexer"
-version = "0.1.0"
+version = "0.1.1"
 description = "動画入り MCAP の GOP 索引（MCAP の summary だけを Range GET で読む）、セグメントのタグ付け、DuckDB の SQL による選別とサンプル一覧（manifest）の作成。"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -12,6 +12,10 @@ dependencies = [
     "protobuf==6.33.6",
     "pyarrow==23.0.1",
 ]
+
+[project.optional-dependencies]
+# 動画のデコーダ（indexer.video_decoder）を使うときだけ入れる（学習器・埋め込みの生成が indexer[video] として使う）
+video = ["av==19.0.2"]
 
 [project.scripts]
 # `indexer build-index|tag|select|count-truth` で CLI を起動できるようにする

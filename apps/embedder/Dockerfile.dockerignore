@@ -1,0 +1,13 @@
+# この Dockerfile 専用の除外設定（ビルドの起点は apps/ なので、パスは apps/ からの相対）
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/tests/
+**/output/
+# 埋め込みのイメージに要らないアプリ
+converter/
+dataset-builder/
+mcap-generator/
+mlflow-server/
+navi-raster/
+trainer/

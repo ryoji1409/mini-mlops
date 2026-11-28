@@ -429,7 +429,7 @@ wheels = [
 
 [[package]]
 name = "indexer"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "../indexer" }
 dependencies = [
     { name = "duckdb" },
@@ -438,13 +438,20 @@ dependencies = [
     { name = "pyarrow" },
 ]
 
+[package.optional-dependencies]
+video = [
+    { name = "av" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "av", marker = "extra == 'video'", specifier = "==19.0.2" },
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "mcap", specifier = "==1.6.0" },
     { name = "protobuf", specifier = "==6.33.6" },
     { name = "pyarrow", specifier = "==23.0.1" },
 ]
+provides-extras = ["video"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1217,12 +1224,12 @@ wheels = [
 
 [[package]]
 name = "trainer"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "av" },
-    { name = "indexer" },
+    { name = "indexer", extra = ["video"] },
     { name = "mlflow-skinny" },
     { name = "navi-raster" },
     { name = "numpy" },
@@ -1243,7 +1250,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = "==3.14.4" },
     { name = "av", specifier = "==19.0.2" },
-    { name = "indexer", editable = "../indexer" },
+    { name = "indexer", extras = ["video"], editable = "../indexer" },
     { name = "mlflow-skinny", specifier = "==3.18.0" },
     { name = "navi-raster", editable = "../navi-raster" },
     { name = "numpy", specifier = "==2.2.6" },

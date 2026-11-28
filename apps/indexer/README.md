@@ -21,11 +21,13 @@
 | `select.py` / `sql/*.sql` | 選別とサンプル一覧。フレームの選び方は `--frames first|random|all` |
 | `duck.py` | DuckDB の準備（S3 の接続設定、表 `frames`・`gops`・`segments` の定義） |
 | `truth.py` | `count-truth` |
+| `video_decoder.py` | 動画のデコーダのインターフェース（`VideoDecoder`）と PyAV の実装。GPU のある環境では NVDEC の実装に差し替える。学習器と埋め込みの生成（apps/embedder）が使う。av は追加の依存（`indexer[video]`）なので、索引のイメージには入らない |
 
 選別の SQL は `segment_id` の列を返せばよく、表 `segments`（タグと集計値）・`gops`・`frames` を使えます。
 `--segment-ids-uri`（Parquet、`segment_id` 列）を渡すと `candidates` という表も使えます（フェーズ 6 の検索結果を渡す入口）。
+`sql/candidates.sql` は渡された一覧をそのまま選び（索引・タグの無い segment_id は除く）、`sql/candidates_rain.sql` はそのうち正解値のタグも「雨」のものだけを選びます。
 
-依存は mcap・pyarrow・DuckDB だけです。学習器（[apps/trainer](../trainer/README.md)）がライブラリとしても使うので、
+依存は mcap・pyarrow・DuckDB だけです（デコーダを使うときだけ `indexer[video]` で av が加わる）。学習器（[apps/trainer](../trainer/README.md)）がライブラリとしても使うので、
 pyarrow・protobuf などの版は学習器のイメージ（Ray の公式イメージ）と揃えています。
 
 ## 実行手順

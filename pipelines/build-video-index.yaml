@@ -35,7 +35,7 @@ spec:
         enum: ["low", "high"]
       # イメージ。タグは apps/indexer/pyproject.toml の version（OWNER は登録するときに GitHub のユーザー名に置き換える）
       - name: indexer-image
-        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.0
+        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.1
   activeDeadlineSeconds: 7200
   ttlStrategy:
     secondsAfterCompletion: 604800

@@ -1,11 +1,11 @@
 # 用語集
 
-フェーズ 5（動画の索引・データの選別・高速な読み出し）で出てくる用語と、それを扱っているファイル。
+フェーズ 5（動画の索引・データの選別・高速な読み出し）とフェーズ 6（画像の埋め込みと検索）で出てくる用語と、それを扱っているファイル。
 
 | 用語 | 意味 | 対応するファイル |
 |---|---|---|
-| H.265（HEVC） | 動画の圧縮方式。前のフレームとの差分だけを持つことで小さくする。このリポジトリでは 320×180・10Hz・B フレームなし | [apps/mcap-generator/src/mcap_generator/video.py](../apps/mcap-generator/src/mcap_generator/video.py)（エンコード）、[apps/trainer/src/trainer/video_decoder.py](../apps/trainer/src/trainer/video_decoder.py)（デコード） |
-| NVDEC | GPU に載っている動画デコード専用の回路。この環境（CPU のみ）では PyAV（FFmpeg のソフトウェアデコーダ）で代わりにデコードする。デコーダは差し替えられる形にしてある | [apps/trainer/src/trainer/video_decoder.py](../apps/trainer/src/trainer/video_decoder.py)（`VideoDecoder` / `PyAVDecoder`） |
+| H.265（HEVC） | 動画の圧縮方式。前のフレームとの差分だけを持つことで小さくする。このリポジトリでは 320×180・10Hz・B フレームなし | [apps/mcap-generator/src/mcap_generator/video.py](../apps/mcap-generator/src/mcap_generator/video.py)（エンコード）、[apps/indexer/src/indexer/video_decoder.py](../apps/indexer/src/indexer/video_decoder.py)（デコード） |
+| NVDEC | GPU に載っている動画デコード専用の回路。この環境（CPU のみ）では PyAV（FFmpeg のソフトウェアデコーダ）で代わりにデコードする。デコーダは差し替えられる形にしてある | [apps/indexer/src/indexer/video_decoder.py](../apps/indexer/src/indexer/video_decoder.py)（`VideoDecoder` / `PyAVDecoder`） |
 | GOP（Group of Pictures） | 単独でデコードできるフレーム（IDR）から、次の IDR の手前までのまとまり。ここでは 10 フレーム = 1 秒。GOP の途中のフレームは、先頭から順にデコードしないと得られない | [video.py](../apps/mcap-generator/src/mcap_generator/video.py)（`GOP_LENGTH`、x265 の設定） |
 | GOP 先頭（IDR） | GOP の最初のフレーム。前のフレームを参照しないので、ここからデコードを始められる。各 IDR に復号の設定（VPS / SPS / PPS）を付けて、途中の GOP だけでもデコードできるようにしている | [video.py](../apps/mcap-generator/src/mcap_generator/video.py)（`repeat-headers=1`）、[apps/indexer/src/indexer/build_index.py](../apps/indexer/src/indexer/build_index.py)（`_verify_gops` で確認） |
 | MCAP 参照位置 | ある GOP が MCAP ファイルのどこにあるか。ここでは「チャンクの開始オフセット（`chunk_offset`）と長さ（`chunk_length`）」。生成器が 1 チャンク = 1 GOP にしているので、この範囲だけを読めば GOP が取り出せる | [apps/indexer/src/indexer/build_index.py](../apps/indexer/src/indexer/build_index.py)（`GOP_SCHEMA`）、[apps/indexer/src/indexer/mcap_chunks.py](../apps/indexer/src/indexer/mcap_chunks.py)（`parse_chunk`）、`s3://derived/index/gops/` |
@@ -21,3 +21,10 @@
 | 正解値（Ground truth） | 学習・評価の基準になる「本当の値」。ここでは生成器が知っている真値（時間帯・天候・近くの小物体の数・進路上の大物体の数）をフレームごとに記録している | [apps/mcap-generator/src/mcap_generator/scene.py](../apps/mcap-generator/src/mcap_generator/scene.py)（`frame_truth`）、[ground_truth.py](../apps/mcap-generator/src/mcap_generator/ground_truth.py)、[apps/indexer/src/indexer/truth.py](../apps/indexer/src/indexer/truth.py)（選別結果の照合） |
 | チャンク（MCAP） | MCAP の中で、メッセージをまとめて zstd で圧縮した単位。圧縮されているので、取り出せる最小の単位はチャンク 1 つ | [apps/mcap-generator/src/mcap_generator/writer.py](../apps/mcap-generator/src/mcap_generator/writer.py)（GOP の先頭で `flush()`）、[docs/architecture.md](architecture.md)「1 チャンク = 1 GOP」 |
 | summary / footer（MCAP） | MCAP の末尾にある索引の部分。footer に summary の開始位置、summary にスキーマ・チャンネル・チャンクの索引がある。ここだけ読めば中身を読まずに位置が分かる | [mcap_chunks.py](../apps/indexer/src/indexer/mcap_chunks.py)（`read_summary`） |
+| 埋め込み（embedding） | 画像や文章を、意味が近いものほど近くなるような数値の並び（ベクトル）に変換したもの。ここでは SigLIP で、画像もテキストも同じ 768 次元の空間に埋め込む。長さを 1 にそろえて、内積 = コサイン類似度で比べる | [apps/embedder/src/embedder/model.py](../apps/embedder/src/embedder/model.py)（`SiglipEmbedder`）、`s3://vectors/<モデル>__<リビジョン>__frames` |
+| キーフレーム | ここでは各 GOP の先頭フレーム（IDR）。前のフレームを参照しないので 1 枚だけデコードできる。埋め込みはキーフレームだけで作る（1 秒に 1 枚） | [apps/embedder/src/embedder/keyframes.py](../apps/embedder/src/embedder/keyframes.py)（`KeyframeReader`） |
+| ベクトル検索 | クエリのベクトルに近い順に、表の行を並べること。ここでは LanceDB の表を全件と比べる（行数が数千なので近似の索引は作らない）。近さはコサイン距離（1 − コサイン類似度） | [apps/embedder/src/embedder/search.py](../apps/embedder/src/embedder/search.py)（`Searcher`）、[tables.py](../apps/embedder/src/embedder/tables.py) |
+| LanceDB | ベクトルと普通の列を一緒に持てる表（Lance 形式のファイル）。S3 互換ストレージの上にそのまま置け、サーバーなしでライブラリだけで検索できる | [tables.py](../apps/embedder/src/embedder/tables.py)、`s3://vectors/` |
+| ゼロショット | そのための学習をしていない分類・検索を、言葉で指示するだけで行うこと。SigLIP は画像と文章の組で学習してあるので、「night」という文に近い画像を探すだけで、夜のシーンの分類器を作らずに夜のシーンを探せる | [search.py](../apps/embedder/src/embedder/search.py)（`--text`）、[evaluate.py](../apps/embedder/src/embedder/evaluate.py) |
+| precision@k | 上位 k 件のうち、正解だった割合。例: "night" の上位 10 件のうち 9 件が本当に夜なら precision@10 = 0.9。でたらめに k 件選んだときの期待値（全体のうち正解の割合）と並べて見る | [evaluate.py](../apps/embedder/src/embedder/evaluate.py)（`evaluate`、`DEFAULT_QUERIES`） |
+| モデルレジストリ | MLflow の、モデルの版とエイリアスを管理する仕組み。埋め込みのモデルの重みもここに置き、エイリアス `embedding` で使う版を決める（重みを毎回インターネットから取らない） | [apps/embedder/src/embedder/registry.py](../apps/embedder/src/embedder/registry.py)（`register_model`、`resolve_model`） |

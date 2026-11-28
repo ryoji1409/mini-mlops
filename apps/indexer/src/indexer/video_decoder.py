@@ -2,7 +2,9 @@
 
 この環境（CPU のみ）では PyAV（FFmpeg のソフトウェアデコーダ）を使う。
 GPU のある環境では、同じインターフェースで NVDEC（GPU に載っている動画デコード専用の回路）を使う実装に差し替える。
-ローダー（video_dataset.py）はデコーダの中身を知らず、decode_gop だけを呼ぶ。
+学習器のローダー（apps/trainer の video_dataset.py）と埋め込みの生成（apps/embedder）は、デコーダの中身を知らず、decode_gop だけを呼ぶ。
+
+av（PyAV）は indexer の追加の依存（indexer[video]）なので、索引・選別だけのイメージには入らない。
 """
 
 from __future__ import annotations

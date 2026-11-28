@@ -1,6 +1,6 @@
 [project]
 name = "trainer"
-version = "0.2.0"
+version = "0.2.1"
 description = "シーン分類（時間帯・天候）の小さな CNN を、PyTorch CPU + DDP（gloo）で学習する。Kubeflow Trainer（torchrun）と Ray Train（RayJob）の両方から起動できる。"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -13,7 +13,7 @@ dependencies = [
     # 動画（H.265）のデコード（FFmpeg を同梱。フェーズ 5 の動画ローダー）
     "av==19.0.2",
     # GOP 索引・Range GET・チャンクの解析（フェーズ 5）。同じリポジトリのライブラリをパスで参照する
-    "indexer",
+    "indexer[video]",
     "mlflow-skinny==3.18.0",
     # 経路ラスタの描画（フェーズ 5）
     "navi-raster",

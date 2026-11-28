@@ -46,7 +46,7 @@ spec:
         value: low
         enum: ["low", "high"]
       - name: indexer-image
-        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.0
+        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.1
   activeDeadlineSeconds: 3600
   ttlStrategy:
     secondsAfterCompletion: 604800

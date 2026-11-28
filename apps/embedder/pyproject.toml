@@ -1,0 +1,58 @@
+[project]
+name = "embedder"
+version = "0.1.0"
+description = "動画のキーフレームの画像埋め込み（SigLIP）を作って LanceDB に入れ、テキスト・画像で検索して segment_id の一覧を作る。"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# バージョンは固定する（公開から 2 週間以上たった版）。学習器と共通のもの（torch・mlflow・pyarrow など）は学習器と同じ版
+dependencies = [
+    # GOP 索引・Range GET・チャンクの解析・動画のデコーダ（フェーズ 5）。同じリポジトリのライブラリをパスで参照する
+    "indexer[video]",
+    # ベクトルの表（Lance 形式）。S3 互換ストレージの上に置ける
+    "lancedb==0.41.0",
+    # モデルの重みを MLflow のモデルレジストリに登録・ダウンロードする
+    "mlflow-skinny==3.18.0",
+    "numpy==2.2.6",
+    "pillow==13.0.0",
+    "protobuf==6.33.6",
+    "pyarrow==23.0.1",
+    # SigLIP のトークナイザ（文字列 → 単語の番号）
+    "sentencepiece==0.2.3",
+    "torch==2.15.0",
+    # SigLIP のモデル本体と前処理
+    "transformers==5.22.2",
+]
+
+[project.scripts]
+# `embedder register-model|embed|search|eval` で CLI を起動できるようにする
+embedder = "embedder.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+]
+
+# torch は Linux では CPU 専用の配布元から入れる（学習器と同じ。PyPI の Linux 版は CUDA のライブラリを引き込むため）
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+# editable: ホストでは ../indexer のソースをそのまま使う（直したときに古いコピーが残らないように）
+indexer = { path = "../indexer", editable = true }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv]
+# 学習器・indexer と揃える間接依存
+constraint-dependencies = [
+    "lz4==4.4.5",
+    "zstandard==0.23.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

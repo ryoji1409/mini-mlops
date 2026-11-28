@@ -11,6 +11,8 @@
 | `train-scene-classifier` | データセットを作り（curated）、シーン分類を分散学習し（TrainJob か RayJob）、閾値を超えたら MLflow に登録する | 4 |
 | `build-video-index` | 動画入り MCAP の GOP 索引（summary だけを Range GET）と、セグメントのタグ付け | 5 |
 | `select-and-curate` | 選別の SQL でセグメントを選び、サンプル一覧（manifest）とシャードを curated に作る | 5 |
+| `embed-video` | 索引のキーフレームを SigLIP で埋め込み、s3://vectors/ の LanceDB の表に入れる（重みは MLflow のモデルレジストリから） | 6 |
+| `video-index-and-embed` | `build-video-index` の手順に続けて `embed-video` の手順を動かす（どちらも templateRef で呼ぶ） | 6 |
 
 ### train-scene-classifier の流れ
 
@@ -62,6 +64,26 @@ build-video-index:  build-index ──▶ tag            select-and-curate:  sel
 - 索引は同時に 2 つ作らない（mutex `video-index`）。選別は同じデータセット・バージョンで mutex
 - 手順は [docs/setup/05-video-index.md](../docs/setup/05-video-index.md)
 
+### embed-video / video-index-and-embed の流れ（フェーズ 6）
+
+```
+embed-video:            embed（batch/v1 Job、イメージ mini-mlops-embedder）
+video-index-and-embed:  [build-video-index の main: build-index ──▶ tag] ──▶ [embed-video の embed]
+                        （どれも data-processing キュー経由、SA curate-pipeline）
+```
+
+| パラメータ | 既定 | 意味 |
+|---|---|---|
+| `gop-stride` | `1` | N 個おきの GOP だけ埋め込む（1 = 全部。GOP は 1 秒）。読み出しの量もほぼ 1/N になる |
+| `embed-force` | `false` | `true` なら埋め込み済みでも作り直す（索引の `force` とは別） |
+| `model-name` / `model-alias` | `siglip-base-p16-224` / `embedding` | MLflow のモデルレジストリの名前とエイリアス。重みはジョブの emptyDir（上限 2Gi）にダウンロードする |
+| `embedder-image` | `ghcr.io/OWNER/mini-mlops-embedder:0.1.0` | |
+
+- 埋め込みは同時に 1 本だけ（mutex `video-embed`。LanceDB の表は、書く人が 1 人なら安全）。`video-index-and-embed` は `video-index` と `video-embed` の両方を取る
+- `video-index-and-embed` は、部品の `build-video-index`・`embed-video` が登録されている必要がある（templateRef で中身を呼ぶため）
+- 処理のログは Job 側（`kubectl -n mlops logs job/<ワークフロー名>-embed`）。`argo logs` には Job の終わりを待つ記録しか出ない
+- 手順は [docs/setup/06-embedding-search.md](../docs/setup/06-embedding-search.md)
+
 ### mcap-convert の流れ
 
 ```
@@ -108,6 +130,8 @@ discover ──(未処理 > 0)──▶ convert（RayJob を作って待つ）�
 | submitter Pod | 0.5 CPU / 512Mi | `ray job submit` してログを追うだけ |
 | **Ray 合計** | **6Gi** | 予算 6GB（Kueue は requests の合計 1.6 CPU / 4.75Gi で枠を数える） |
 | discover / validate | 1 CPU / 512Mi | 短時間だけ動く。init / wait コンテナは別に 256Mi（Argo の executor 設定） |
+| 索引・タグ付け・選別の Job | 1 CPU / 768Mi | requests 200m / 256Mi |
+| 埋め込みの Job | 2 CPU / 2560Mi | requests 2 CPU / 1536Mi。実測で 1 フレーム約 0.23 秒、メモリ最大約 0.9GB |
 
 ## 実行手順
 
@@ -135,6 +159,11 @@ argo submit -n mlops --from workflowtemplate/train-scene-classifier -p engine=ra
 for f in build-video-index select-and-curate; do sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" "pipelines/$f.yaml" | kubectl apply -f -; done
 argo submit -n mlops --from workflowtemplate/build-video-index --watch
 argo submit -n mlops --from workflowtemplate/select-and-curate -p dataset=night-rain -p version=1 -p sql=night_rain --watch
+
+# 埋め込みと検索（フェーズ 6。build-video-index と embed-video を先に登録する）
+for f in embed-video video-index-and-embed; do sed "s#ghcr.io/OWNER/#ghcr.io/${GHCR_USER}/#" "pipelines/$f.yaml" | kubectl apply -f -; done
+argo submit -n mlops --from workflowtemplate/video-index-and-embed --watch
+argo submit -n mlops --from workflowtemplate/select-and-curate -p dataset=search-night -p version=1 -p sql=candidates -p segment-ids-uri=s3://vectors/queries/night-top20.parquet --watch
 ```
 
 ## 動作確認コマンド
@@ -172,6 +201,7 @@ OK          dev-001-20261104T013238Z         imu=3000, gnss=300, frames_front=15
 | convert が `cannot set blockOwnerDeletion if an ownerReference refers to a resource you can't set finalizers on` | API サーバで OwnerReferencesPermissionEnforcement が有効な環境。Role に `argoproj.io` の `workflows/finalizers` への `update` を足す |
 | RayJob の head Pod が `OOMKilled` | head の limit（3Gi）を超えた。ドライバのメモリが増えた可能性。`kubectl -n mlops describe pod <head>` で確認し、メモリ予算の範囲で limit を上げる |
 | RayJob が `Pending` のまま（head / worker が `Pending`） | ノードのメモリが足りず配置できない（head は request 2.5Gi）。`kubectl describe pod` の Events を確認し、他の負荷を減らす |
+| `video-index-and-embed` が `WorkflowTemplate.argoproj.io "embed-video" not found` | 部品のテンプレートが登録されていない。`build-video-index`・`embed-video` を先に `kubectl apply` する |
 | validate が `ORPHAN` / `MISMATCH` で失敗 | apps/converter/README.md の「よくあるエラー」を参照。`argo submit ... -p force=true` で作り直せる |
 | `argo logs` でログが出ない | Pod が GC 済み（成功 10 分後）。UI ではアーティファクト（s3://argo-artifacts）に保存されたログが見られる |
 | train-scene-classifier の学習で失敗・止まる | [docs/setup/04-training.md](../docs/setup/04-training.md) の「よくあるエラー」を参照 |

@@ -13,7 +13,7 @@ from indexer.mcap_chunks import VIDEO_TOPIC, message_class, nal_unit_types, pars
 from indexer.rangefile import RangeReader
 from PIL import Image
 
-from trainer.video_decoder import make_decoder
+from indexer.video_decoder import make_decoder
 
 log = logging.getLogger(__name__)
 

@@ -9,3 +9,4 @@ converter/
 dataset-builder/
 mcap-generator/
 mlflow-server/
+embedder/

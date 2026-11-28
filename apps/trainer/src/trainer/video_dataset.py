@@ -4,7 +4,7 @@
 1. サンプル一覧のシャード（Parquet）を読み、同じ GOP（同じ MCAP・同じチャンク）のサンプルをまとめる
 2. その GOP のチャンクだけを S3 の Range GET で取る（MCAP 全体はダウンロードしない）
 3. チャンクから動画のメッセージ（H.265）と GNSS のメッセージを取り出す
-4. 動画をデコードし（video_decoder.py）、必要なフレームだけを取り出す
+4. 動画をデコードし（indexer の video_decoder.py）、必要なフレームだけを取り出す
 5. 同じチャンクの GNSS から位置と向きを推定し、経路ラスタを描く（navi_raster）
 → 1 サンプル = カメラ画像 + 経路ラスタ + 正解値
 
@@ -36,7 +36,7 @@ from navi_raster import RasterSpec, estimate_pose, render
 from torch.utils.data import IterableDataset, get_worker_info
 
 from trainer.storage import read_bytes, read_json, split_uri
-from trainer.video_decoder import VideoDecoder, make_decoder
+from indexer.video_decoder import VideoDecoder, make_decoder
 
 log = logging.getLogger(__name__)
 

@@ -103,9 +103,8 @@ def test_外から渡したsegment_idで絞り込める(indexed: dict[str, Path]
     tag_segments(open_location(raw), open_location(derived), raw, derived)
     all_ids = [s["segment_id"] for s in _read(indexed["derived"] / "tags" / "segments.parquet")]
     ids_path = indexed["raw"].parent / "search_result.parquet"
-    pq.write_table(pa.table({"segment_id": all_ids[:3]}), ids_path)
-    sql = indexed["raw"].parent / "from_search.sql"
-    sql.write_text("SELECT segment_id FROM segments JOIN candidates USING (segment_id)")
-    m = select_and_curate(raw, derived, open_location(curated), SelectParams("s", 1, str(sql), segment_ids_uri=str(ids_path)))
+    # 検索結果と同じ形（segment_id のほかに score などの列があってもよい）。索引に無い segment_id は選ばれない
+    pq.write_table(pa.table({"segment_id": all_ids[:3] + ["no-such-session_000"], "score": [0.9, 0.8, 0.7, 0.6]}), ids_path)
+    m = select_and_curate(raw, derived, open_location(curated), SelectParams("s", 1, "candidates", segment_ids_uri=str(ids_path)))
     assert m["counts"]["segments"] == 3
     assert json.loads((indexed["curated"] / "s" / "v1" / "manifest.json").read_text())["selection"]["segment_ids_uri"] == str(ids_path)

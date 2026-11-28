@@ -1,0 +1,79 @@
+# 索引の作成に続けて、埋め込みを作る（フェーズ 6）。
+#
+#   1. build-index → tag … build-video-index の main を templateRef で呼ぶ（中身は build-video-index.yaml）
+#   2. embed             … embed-video の embed を templateRef で呼ぶ（中身は embed-video.yaml）
+# 部品のテンプレート（build-video-index / embed-video）は単独でもそのまま使える。
+# build-video-index の手順は workflow.parameters（force・verify-gops・priority・indexer-image）を読むので、
+# このテンプレートにも同じ名前の引数を持たせている。
+#
+# 実行:  argo submit -n mlops --from workflowtemplate/video-index-and-embed --watch
+# 登録:  docs/setup/06-embedding-search.md の手順（build-video-index と embed-video を先に登録しておく）
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: video-index-and-embed
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  entrypoint: main
+  serviceAccountName: curate-pipeline
+  imagePullSecrets:
+    - name: ghcr-pull
+  arguments:
+    parameters:
+      # 索引（build-video-index と同じ名前・意味）
+      - name: force
+        value: "false"
+        enum: ["false", "true"]
+        description: true なら作成済みの索引も作り直す
+      - name: verify-gops
+        value: "1"
+      - name: priority
+        value: low
+        enum: ["low", "high"]
+      - name: indexer-image
+        value: ghcr.io/OWNER/mini-mlops-indexer:0.1.1
+      # 埋め込み（embed-video と同じ名前・意味）
+      - name: gop-stride
+        value: "1"
+      - name: embed-force
+        value: "false"
+        enum: ["false", "true"]
+      - name: model-name
+        value: siglip-base-p16-224
+      - name: model-alias
+        value: embedding
+      - name: embedder-image
+        value: ghcr.io/OWNER/mini-mlops-embedder:0.1.0
+  activeDeadlineSeconds: 10800
+  ttlStrategy:
+    secondsAfterCompletion: 604800
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 10m
+  # 単独の build-video-index・embed-video と同じ名前の mutex を取る（同じ表・同じファイルを同時に書かない）
+  synchronization:
+    mutexes:
+      - name: video-index
+      - name: video-embed
+
+  templates:
+    - name: main
+      steps:
+        - - name: index
+            templateRef:
+              name: build-video-index
+              template: main
+        - - name: embed
+            templateRef:
+              name: embed-video
+              template: embed
+            arguments:
+              parameters:
+                - { name: gop-stride, value: "{{workflow.parameters.gop-stride}}" }
+                - { name: force, value: "{{workflow.parameters.embed-force}}" }
+                - { name: model-name, value: "{{workflow.parameters.model-name}}" }
+                - { name: model-alias, value: "{{workflow.parameters.model-alias}}" }
+                - { name: priority, value: "{{workflow.parameters.priority}}" }
+                - { name: image, value: "{{workflow.parameters.embedder-image}}" }

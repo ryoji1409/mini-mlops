@@ -50,7 +50,7 @@ CPU だけの小さな Kubernetes クラスタで組み立てて動かす検証�
 | 3 | Kueue によるジョブのキューイング（クォータ・優先度・貸し借り） | [docs/setup/03-kueue.md](docs/setup/03-kueue.md) |
 | 4 | CPU で分散学習（Kubeflow Trainer v2 / Ray Train）と MLflow による実験管理 | [docs/setup/04-training.md](docs/setup/04-training.md) |
 | 5 | 動画の索引・データの選別・高速な読み出し（H.265 の GOP 単位の Range GET、DuckDB による選別、経路ラスタ） | [docs/setup/05-video-index.md](docs/setup/05-video-index.md) |
-| 6 | 画像埋め込みと LanceDB での検索 | |
+| 6 | 画像の埋め込み（SigLIP）と LanceDB での検索。検索結果の segment_id を選別に渡して学習用データセットにする | [docs/setup/06-embedding-search.md](docs/setup/06-embedding-search.md) |
 
 用語は [docs/glossary.md](docs/glossary.md) にまとめています。
 
@@ -66,7 +66,8 @@ CPU だけの小さな Kubernetes クラスタで組み立てて動かす検証�
 | `apps/indexer/` | 動画の GOP 索引（MCAP の summary だけを Range GET）、セグメントのタグ付け、DuckDB の SQL による選別とサンプル一覧（uv プロジェクト + Dockerfile） |
 | `apps/navi-raster/` | 経路ラスタ（予定ルートを自分中心・進行方向が上の画像にする）を描くライブラリ |
 | `apps/trainer/` | シーン分類の分散学習（PyTorch CPU + DDP。torchrun / Ray Train）、モデル登録、系譜の確認、動画のサンプルを Range GET + 先読みで読むローダー（uv プロジェクト + Dockerfile） |
+| `apps/embedder/` | キーフレームの画像埋め込み（SigLIP、重みは MLflow のモデルレジストリ）、LanceDB の表、テキスト・画像での検索と precision@k の評価（uv プロジェクト + Dockerfile） |
 | `apps/mlflow-server/` | MLflow トラッキングサーバーのイメージ（公式イメージ + boto3） |
-| `pipelines/` | Argo WorkflowTemplate（mcap-convert: 変換、train-scene-classifier: データセット作成 → 学習 → 登録、build-video-index / select-and-curate: 動画の索引・選別） |
+| `pipelines/` | Argo WorkflowTemplate（mcap-convert: 変換、train-scene-classifier: データセット作成 → 学習 → 登録、build-video-index / select-and-curate: 動画の索引・選別、embed-video / video-index-and-embed: 埋め込み） |
 | `scripts/` | 手作業では難しい処理だけのスクリプト（MCAP の検証、raw へのアップロード） |
 | `output/` | 生成した MCAP の置き場（.gitignore 済み） |

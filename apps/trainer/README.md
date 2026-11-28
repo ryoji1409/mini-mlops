@@ -28,10 +28,10 @@ curated の学習用データセット（[apps/dataset-builder](../dataset-build
 | `trace.py` | モデル → run → データセットのマニフェスト → derived のマニフェスト → raw の MCAP をハッシュを照合しながらたどる |
 | `wait.py` | TrainJob の `status.conditions` を見張る（Argo の成功条件ではリストの中を判定できないため） |
 | `video_dataset.py` | 動画のサンプル一覧（[apps/indexer](../indexer/README.md) の select が作る）を読む IterableDataset。GOP ごとに Range GET → デコード → 経路ラスタ（[apps/navi-raster](../navi-raster/README.md)）。先読みのスレッド数（`prefetch`）と人工的な遅延（`latency_ms`）を指定できる |
-| `video_decoder.py` | デコーダのインターフェース（`VideoDecoder`）と PyAV の実装。GPU のある環境では NVDEC の実装に差し替える |
 | `bench_video.py` / `video_check.py` | `bench-video` / `decode-gop` |
 
 0.2.0 から、同じリポジトリのライブラリ（`apps/indexer`・`apps/navi-raster`）をパスで参照しています（`pyproject.toml` の `[tool.uv.sources]`）。
+動画のデコーダ（`VideoDecoder` / PyAV の実装）は、埋め込みの生成（apps/embedder）と共通にするため、0.2.1 で indexer に移しました（`indexer[video]` の `indexer.video_decoder`）。
 そのため **イメージのビルドの起点は `apps/`** です（`docker buildx build -f apps/trainer/Dockerfile apps`。除外は `Dockerfile.dockerignore`）。
 
 ### CPU の使いすぎを防ぐ

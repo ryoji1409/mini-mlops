@@ -310,9 +310,13 @@ open output/preview/sample-03.png      # 画像を開くコマンドは環境に
 フェーズ 6 の検索結果のように、別の仕組みで選んだ segment_id の一覧（Parquet、`segment_id` 列）を
 `segment-ids-uri` で渡すと、SQL から `candidates` という表で使えます（タグの条件と組み合わせられる）。
 
+indexer 0.1.1 からは、渡した一覧をそのまま選ぶ `sql=candidates` と、そのうち雨のものだけを選ぶ `sql=candidates_rain` がイメージに入っています。
+検索の結果から選別する一連の手順は [06-embedding-search.md](06-embedding-search.md) の手順 7 にあります。
+ほかの条件と組み合わせたいときは、SQL ファイルを書きます。
+
 ```bash
 cat > /tmp/from_candidates.sql <<'EOF'
-SELECT segment_id FROM segments JOIN candidates USING (segment_id) WHERE weather = 'rain'
+SELECT segment_id FROM segments JOIN candidates USING (segment_id) WHERE time_of_day = 'night'
 EOF
 ```
 

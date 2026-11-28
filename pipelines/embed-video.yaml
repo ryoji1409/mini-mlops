@@ -1,0 +1,143 @@
+# 動画のキーフレームの画像埋め込み（フェーズ 6）。
+#
+#   embed … GOP 索引（s3://derived/index/gops）から各 GOP の先頭フレーム（キーフレーム）だけを Range GET でデコードし、
+#           SigLIP で埋め込みにして s3://vectors/ の LanceDB の表（キーフレームごと・セグメントごと）に入れる。
+#           同じモデル・リビジョンで埋め込み済みのセッションはスキップする
+# batch/v1 Job にして、Kueue の data-processing キューを通す（索引・変換と同じ枠を順番に使う）。
+# モデルの重みは MLflow のモデルレジストリ（--model-name / --model-alias）から emptyDir にダウンロードして使う
+# （インターネットには出ない。登録は docs/setup/06-embedding-search.md 手順 2 でホストから 1 回だけ）。
+#
+# 実行:  argo submit -n mlops --from workflowtemplate/embed-video --watch
+# 索引の作成に続けて動かすときは video-index-and-embed（このテンプレートの embed を templateRef で呼ぶ）
+# 登録:  docs/setup/06-embedding-search.md の手順（OWNER を GitHub のユーザー名に置き換えて kubectl apply）
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: embed-video
+  namespace: mlops
+  labels:
+    app.kubernetes.io/part-of: mini-mlops
+spec:
+  entrypoint: main
+  serviceAccountName: curate-pipeline
+  imagePullSecrets:
+    - name: ghcr-pull
+  arguments:
+    parameters:
+      - name: gop-stride
+        value: "1"
+        description: N 個おきの GOP だけ埋め込む（1 = 全部。GOP は 1 秒）
+      - name: embed-force
+        value: "false"
+        enum: ["false", "true"]
+        description: true なら埋め込み済みでも作り直す
+      - name: model-name
+        value: siglip-base-p16-224
+      - name: model-alias
+        value: embedding
+      - name: priority
+        value: low
+        enum: ["low", "high"]
+      # イメージ。タグは apps/embedder/pyproject.toml の version（OWNER は登録するときに GitHub のユーザー名に置き換える）
+      - name: embedder-image
+        value: ghcr.io/OWNER/mini-mlops-embedder:0.1.0
+  activeDeadlineSeconds: 7200
+  ttlStrategy:
+    secondsAfterCompletion: 604800
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 10m
+  # LanceDB の表は、書く人が 1 人なら安全（同時に 2 つの埋め込みを動かさない）
+  synchronization:
+    mutexes:
+      - name: video-embed
+
+  templates:
+    - name: main
+      steps:
+        - - name: embed
+            template: embed
+            arguments:
+              parameters:
+                - { name: gop-stride, value: "{{workflow.parameters.gop-stride}}" }
+                - { name: force, value: "{{workflow.parameters.embed-force}}" }
+                - { name: model-name, value: "{{workflow.parameters.model-name}}" }
+                - { name: model-alias, value: "{{workflow.parameters.model-alias}}" }
+                - { name: priority, value: "{{workflow.parameters.priority}}" }
+                - { name: image, value: "{{workflow.parameters.embedder-image}}" }
+
+    # 埋め込みを batch/v1 Job（Kueue の data-processing キュー経由）として動かす。
+    # 値はすべて inputs で受け取る（video-index-and-embed から templateRef で呼べるように）
+    - name: embed
+      inputs:
+        parameters:
+          - name: gop-stride
+          - name: force
+          - name: model-name
+          - name: model-alias
+          - name: priority
+          - name: image
+      resource:
+        action: create
+        setOwnerReference: true
+        successCondition: status.succeeded > 0
+        failureCondition: status.failed > 0
+        manifest: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "{{workflow.name}}-embed"
+            labels:
+              app.kubernetes.io/part-of: mini-mlops
+              app.kubernetes.io/component: embedder
+              kueue.x-k8s.io/queue-name: data-processing
+              kueue.x-k8s.io/priority-class: "{{inputs.parameters.priority}}"
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 3600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/part-of: mini-mlops
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                imagePullSecrets:
+                  - name: ghcr-pull
+                containers:
+                  - name: embedder
+                    image: "{{inputs.parameters.image}}"
+                    command: [embedder]
+                    args:
+                      - embed
+                      - "--model-name={{inputs.parameters.model-name}}"
+                      - "--model-alias={{inputs.parameters.model-alias}}"
+                      - "--gop-stride={{inputs.parameters.gop-stride}}"
+                      - "--force={{inputs.parameters.force}}"
+                    envFrom:
+                      - configMapRef: { name: pipeline-s3 }
+                      - secretRef: { name: pipeline-s3-credentials }
+                    env:
+                      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                        value: when_required
+                      # 重みは MLflow サーバー経由でダウンロードする（ジョブに s3://mlflow のキーは配らない）
+                      - name: MLFLOW_TRACKING_URI
+                        value: http://mlflow.mlflow.svc:5000
+                      # torch のスレッド数を CPU の上限に合わせる（多すぎるとかえって遅くなる）
+                      - name: EMBEDDER_THREADS
+                        value: "2"
+                      - name: OMP_NUM_THREADS
+                        value: "2"
+                    # 実測（CPU 2 個）: 1 フレーム約 0.23 秒、メモリの最大 約 0.9GB（重み 0.8GB を読み込んだ状態）。
+                    # data-processing の枠（2 CPU / 5.5Gi）の中に収まる
+                    resources:
+                      requests: { cpu: "2", memory: 1536Mi }
+                      limits: { cpu: "2", memory: 2560Mi }
+                    volumeMounts:
+                      - name: models
+                        mountPath: /models
+                volumes:
+                  # 重みの置き場（約 0.8GB。ジョブが終われば消える）
+                  - name: models
+                    emptyDir:
+                      sizeLimit: 2Gi

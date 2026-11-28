@@ -16,6 +16,7 @@
         "Read:raw", "List:raw",
         "Read:derived", "Write:derived", "List:derived",
         "Read:curated", "Write:curated", "List:curated",
+        "Read:vectors", "Write:vectors", "List:vectors",
         "Read:argo-artifacts", "Write:argo-artifacts", "List:argo-artifacts"
       ]
     },
